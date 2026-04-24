@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nod Reader — Minimal Prototype</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0e0e10;
+      color: #d4d0c8;
+      font-family: 'Lora', Georgia, serif;
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+
+    /* ── Reading Stage ── */
+    #readerStage {
+      position: relative;
+      width: 100vw; height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* ── Page Container ── */
+    #pageContainer {
+      max-width: 620px;
+      padding: 40px 30px;
+      line-height: 1.85;
+      font-size: 1.15rem;
+      letter-spacing: 0.01em;
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+    #pageContainer.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    #pageContainer.exit-up {
+      opacity: 0;
+      transform: translateY(-18px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+
+    #pageContainer h2 {
+      font-family: 'Lora', serif;
+      font-size: 1.6rem;
+      font-weight: 600;
+      color: #e8e4da;
+      margin-bottom: 20px;
+      letter-spacing: 0.5px;
+    }
+    #pageContainer p {
+      margin-bottom: 16px;
+      color: #b8b4a8;
+    }
+    #pageContainer em { color: #c8c0b0; }
+
+    /* ── Page Progress (bottom center) ── */
+    #pageProgress {
+      position: fixed;
+      bottom: 24px; left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Inter', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 300;
+      color: #555;
+      letter-spacing: 2px;
+      z-index: 20;
+    }
+    #progressDots {
+      display: flex; gap: 8px;
+      justify-content: center;
+      margin-top: 6px;
+    }
+    .pdot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #333;
+      transition: background 0.4s;
+    }
+    .pdot.active { background: #7a9bba; }
+    .pdot.read   { background: #4a5a6a; }
+
+    /* ── Nod flash (full-screen subtle) ── */
+    #nodFlash {
+      position: fixed; inset: 0;
+      pointer-events: none; z-index: 15;
+      border: 2px solid rgba(120, 180, 255, 0.0);
+      transition: border-color 0.15s;
+    }
+    #nodFlash.flash {
+      border-color: rgba(120, 180, 255, 0.3);
+    }
+
+    /* ── PiP Camera ── */
+    #pip {
+      position: fixed;
+      bottom: 20px; right: 20px;
+      width: 160px; height: 120px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #2a2a2a;
+      background: #000;
+      z-index: 20;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      opacity: 0.75;
+      transition: opacity 0.3s;
+    }
+    #pip:hover { opacity: 1; }
+    #pip video {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    #pip canvas {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      transform: scaleX(-1);
+    }
+
+    /* Nod indicator dot on PiP */
+    #nodDot {
+      position: absolute;
+      top: 8px; right: 8px;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #444;
+      transition: background 0.2s;
+      z-index: 2;
+    }
+    #nodDot.armed { background: #f80; }
+    #nodDot.nod   { background: #0f0; }
+
+    /* ── Calibration Overlay ── */
+    #calOverlay {
+      position: fixed; inset: 0;
+      background: rgba(10, 10, 14, 0.95);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 50;
+      transition: opacity 0.5s;
+    }
+    #calOverlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #calOverlay h2 {
+      font-family: 'Inter', sans-serif;
+      font-size: 1.1rem; font-weight: 400;
+      color: #999; margin-bottom: 24px;
+      letter-spacing: 0.5px;
+    }
+    #calOverlay p {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.85rem; color: #666;
+      max-width: 400px; text-align: center;
+      line-height: 1.6; margin-bottom: 30px;
+    }
+
+    /* Calibration target ring */
+    #calRing {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      border: 3px solid #333;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 30px;
+      position: relative;
+    }
+    #calRingFill {
+      position: absolute; inset: 0;
+      border-radius: 50%;
+      /* conic gradient updated by JS */
+    }
+    #calRingDot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #7a9bba;
+      z-index: 1;
+    }
+
+    .cal-btn {
+      font-family: 'Inter', sans-serif;
+      padding: 10px 28px;
+      border: 1px solid #555;
+      border-radius: 6px;
+      background: transparent;
+      color: #ccc;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.5px;
+    }
+    .cal-btn:hover {
+      border-color: #7a9bba;
+      color: #7a9bba;
+      background: rgba(122, 155, 186, 0.08);
+    }
+    .cal-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    #calStatus {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.78rem;
+      color: #666;
+      margin-top: 18px;
+      min-height: 20px;
+    }
+
+    /* ── Hint bar (top) ── */
+    #hintBar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      text-align: center;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.72rem;
+      color: #444;
+      padding: 8px;
+      z-index: 20;
+      letter-spacing: 0.5px;
+      opacity: 1;
+      transition: opacity 2s;
+    }
+    #hintBar.fade { opacity: 0; }
+
+    /* ── End screen ── */
+    #endScreen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    #endScreen h2 {
+      font-family: 'Inter', sans-serif;
+      font-weight: 400; font-size: 1.1rem;
+      color: #888;
+    }
+    #endScreen p {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.82rem; color: #555;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════ CALIBRATION OVERLAY ═══════════ -->
+<div id="calOverlay">
+  <h2>Nod Reader</h2>
+  <p>
+    Sit comfortably and look at the dot below.<br>
+    Calibration captures your neutral head position,<br>
+    then nods will turn pages.
+  </p>
+  <div id="calRing">
+    <div id="calRingFill"></div>
+    <div id="calRingDot"></div>
+  </div>
+  <button class="cal-btn" id="btnCal">Begin Calibration</button>
+  <div id="calStatus">Camera initializing…</div>
+</div>
+
+<!-- ═══════════ READING STAGE ═══════════ -->
+<div id="readerStage">
+  <div id="pageContainer"></div>
+  <div id="nodFlash"></div>
+
+  <!-- End of text screen -->
+  <div id="endScreen">
+    <h2>— end —</h2>
+    <p>You read the entire passage with nods.</p>
+    <button class="cal-btn" onclick="restartReading()">Read Again</button>
+  </div>
+</div>
+
+<!-- Page progress dots -->
+<div id="pageProgress">
+  <div id="progressDots"></div>
+</div>
+
+<!-- Hint bar -->
+<div id="hintBar">nod to turn · arrow keys as fallback · esc to recalibrate</div>
+
+<!-- ═══════════ PiP CAMERA ═══════════ -->
+<div id="pip">
+  <video id="webcam" autoplay playsinline></video>
+  <canvas id="pipCanvas"></canvas>
+  <div id="nodDot"></div>
+</div>
+
+<!-- ═══════════ MediaPipe CDN ═══════════ -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432234/camera_utils.js"
+        crossorigin="anonymous"></script>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+ *  BAKED NOD BASELINE — proven in debug scaffold
+ *  ──────────────────
+ *  Change these to update the baked-in nod sensitivity.
+ * ═══════════════════════════════════════════════════════════════ */
+const NOD_BASE_THRESHOLD = 0.06;   // min pitch-delta to enter DOWN phase
+const NOD_DISTANCE_SCALE = 0.55;   // face-size compensation factor
+const NOD_COOLDOWN_MS    = 1200;   // lockout after nod registration (ms)
+const SMOOTHING          = 0.30;   // EMA alpha for nose-Y smoothing
+const TARGET_RADIUS_PX   = 38;    // (retained for reference; used in debug scaffold)
+
+/* ═══════════════════════════════════════════════════════════════
+ *  SAMPLE TEXT — original prose, 6 pages
+ *  ──────────────────────────────────────
+ *  Replace this array with your own content.  Each entry is one
+ *  page of HTML.  The reader advances through them on nod.
+ * ═══════════════════════════════════════════════════════════════ */
+const PAGES = [
+  `<h2>I.</h2>
+   <p>The lantern swayed once at the edge of the dock and then went still. Not the kind of stillness that meant the wind had stopped — the kind that meant the wind was deciding what to do next.</p>
+   <p>Maren kept her eyes on the water. The harbor was ink-black and patient, reflecting nothing but the faintest scratch of starlight against its surface, like a letter half-written and abandoned.</p>
+   <p>She had been told to wait. So she waited.</p>`,
+
+  `<h2>II.</h2>
+   <p>The boat arrived without a sound — no creak of wood, no slap of hull against tide. It was simply there, as if the darkness had folded and deposited it at the end of the pier like a thought you didn't know you were having.</p>
+   <p>A figure stood at the bow. Tall. Wrapped in something that might have been a cloak or might have been the night itself pinned at the throat.</p>
+   <p><em>"You're the cartographer?"</em> the figure asked. The voice was quiet, but it carried across the water as though the harbor had decided to help.</p>`,
+
+  `<h2>III.</h2>
+   <p>Maren climbed aboard without answering. She had learned years ago that the people who hired cartographers in the dark already knew the answer to their own questions. They weren't asking. They were checking.</p>
+   <p>The deck was warm beneath her boots — warmer than wood had any right to be in late autumn. She knelt, pressed her palm flat. Something hummed beneath the planks. Low and patient, like a sleeping breath.</p>
+   <p>The figure hadn't moved. <em>"We leave when the stars turn,"</em> it said.</p>`,
+
+  `<h2>IV.</h2>
+   <p>The stars turned twenty minutes later. Maren would never be sure whether they actually moved or whether the boat simply decided they had. One moment the constellations were familiar — the Archer, the Anvil, the old Knotted River that every sailor on the northern coast could trace with their eyes closed.</p>
+   <p>The next moment, none of them matched anything she had ever charted.</p>
+   <p>She pulled her journal from its waxed sleeve and began to draw.</p>`,
+
+  `<h2>V.</h2>
+   <p>There is a particular silence that happens when a cartographer realizes they are mapping something that does not want to be mapped. It is not fear. It is closer to the silence between a question and the answer you already know will change everything.</p>
+   <p>Maren's pen stopped. The lines she had drawn were moving — not on the page, but in the water below them, as though the sea were reading over her shoulder and rearranging itself to match.</p>
+   <p><em>"It does that,"</em> the figure said, almost gently. <em>"You'll get used to it."</em></p>`,
+
+  `<h2>VI.</h2>
+   <p>By morning, Maren had filled eleven pages. Each one different from the last. Each one true in the moment she drew it and obsolete by the time her pen lifted.</p>
+   <p>The figure brought her black tea in a cup that was warm before the water was poured. She held it with both hands and watched the horizon — which was not a line, exactly, but a suggestion. A place where the sea and the sky were still negotiating.</p>
+   <p><em>"Where are we going?"</em> she asked. The first words she had spoken since boarding.</p>
+   <p>The figure tilted its head, as though the question were a small, interesting bird that had landed nearby.</p>
+   <p><em>"Where the map leads,"</em> it said. <em>"Once you finish drawing it."</em></p>`
+];
+
+// ══════════════════════ DOM refs ══════════════════════
+const video        = document.getElementById('webcam');
+const pipCanvas    = document.getElementById('pipCanvas');
+const pipCtx       = pipCanvas.getContext('2d');
+const nodDot       = document.getElementById('nodDot');
+const nodFlash     = document.getElementById('nodFlash');
+const pageCont     = document.getElementById('pageContainer');
+const calOverlay   = document.getElementById('calOverlay');
+const calRingFill  = document.getElementById('calRingFill');
+const calStatus    = document.getElementById('calStatus');
+const btnCal       = document.getElementById('btnCal');
+const hintBar      = document.getElementById('hintBar');
+const dotsContainer= document.getElementById('progressDots');
+const endScreen    = document.getElementById('endScreen');
+
+// ══════════════════════ State ══════════════════════
+let smoothedNoseY  = null;
+let baselineNoseY  = null;
+let refFaceHeight  = null;
+let nodPhase       = 'IDLE';
+let nodArmed       = false;
+let lastNodTime    = 0;
+let currentPage    = 0;
+let readingActive  = false;
+let cameraReady    = false;
+
+// Calibration
+let calibrating = false;
+let calSamples  = [];
+const CAL_FRAMES = 60;
+
+// ══════════════════════ Progress dots ══════════════════════
+function buildDots() {
+  dotsContainer.innerHTML = '';
+  for (let i = 0; i < PAGES.length; i++) {
+    const d = document.createElement('div');
+    d.className = 'pdot' + (i === 0 ? ' active' : '');
+    dotsContainer.appendChild(d);
+  }
+}
+buildDots();
+
+function updateDots() {
+  const dots = dotsContainer.children;
+  for (let i = 0; i < dots.length; i++) {
+    dots[i].className = 'pdot' +
+      (i === currentPage ? ' active' : '') +
+      (i < currentPage ? ' read' : '');
+  }
+}
+
+// ══════════════════════ Page display ══════════════════════
+function showPage(idx, direction = 'forward') {
+  if (idx < 0 || idx >= PAGES.length) return;
+
+  // Exit current page
+  pageCont.classList.remove('visible');
+  pageCont.classList.add('exit-up');
+
+  setTimeout(() => {
+    currentPage = idx;
+    pageCont.innerHTML = PAGES[idx];
+    pageCont.classList.remove('exit-up');
+    updateDots();
+
+    // Force reflow then enter
+    void pageCont.offsetWidth;
+    pageCont.classList.add('visible');
+  }, 300);
+}
+
+function nextPage() {
+  if (currentPage >= PAGES.length - 1) {
+    // End of text
+    pageCont.classList.remove('visible');
+    pageCont.classList.add('exit-up');
+    setTimeout(() => {
+      endScreen.style.display = 'flex';
+    }, 300);
+    return;
+  }
+  showPage(currentPage + 1);
+  flashNod();
+}
+
+function prevPage() {
+  if (currentPage <= 0) return;
+  endScreen.style.display = 'none';
+  showPage(currentPage - 1, 'backward');
+}
+
+function restartReading() {
+  endScreen.style.display = 'none';
+  currentPage = 0;
+  showPage(0);
+}
+// Expose for onclick
+window.restartReading = restartReading;
+
+function flashNod() {
+  nodFlash.classList.add('flash');
+  setTimeout(() => nodFlash.classList.remove('flash'), 200);
+}
+
+// ══════════════════════ Keyboard fallback ══════════════════════
+document.addEventListener('keydown', e => {
+  if (!readingActive) return;
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); nextPage(); }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); prevPage(); }
+  if (e.key === 'Escape')     { recalibrate(); }
+});
+
+function recalibrate() {
+  readingActive = false;
+  calOverlay.classList.remove('hidden');
+  calStatus.textContent = 'Ready to recalibrate.';
+  btnCal.disabled = false;
+  baselineNoseY = null;
+  smoothedNoseY = null;
+}
+
+// ══════════════════════ Calibration ══════════════════════
+btnCal.addEventListener('click', () => {
+  if (!cameraReady || calibrating) return;
+  calibrating   = true;
+  calSamples    = [];
+  smoothedNoseY = null;
+  btnCal.disabled = true;
+  calStatus.textContent = 'Hold still — calibrating…';
+  calRingFill.style.background = 'transparent';
+});
+
+function finishCalibration() {
+  baselineNoseY = calSamples.reduce((s, v) => s + v.y, 0) / calSamples.length;
+  refFaceHeight = calSamples.reduce((s, v) => s + v.h, 0) / calSamples.length;
+  calibrating   = false;
+  readingActive = true;
+
+  calStatus.textContent = '✓ Calibrated — nod to turn pages.';
+
+  // Dismiss overlay
+  setTimeout(() => {
+    calOverlay.classList.add('hidden');
+    showPage(currentPage);
+
+    // Fade the hint bar after a few seconds
+    setTimeout(() => hintBar.classList.add('fade'), 5000);
+  }, 800);
+
+  console.log('[CAL DONE]', { baselineNoseY, refFaceHeight });
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  MEDIAPIPE FACEMESH
+ * ══════════════════════════════════════════════════════════════ */
+const faceMesh = new FaceMesh({
+  locateFile: file =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`
+});
+
+faceMesh.setOptions({
+  maxNumFaces            : 1,
+  refineLandmarks        : true,
+  minDetectionConfidence : 0.5,
+  minTrackingConfidence  : 0.5
+});
+
+faceMesh.onResults(onResults);
+
+/* ── Camera initialization ── */
+const camera = new Camera(video, {
+  onFrame: async () => { await faceMesh.send({ image: video }); },
+  width: 640, height: 480
+});
+
+camera.start().then(() => {
+  pipCanvas.width  = 160;
+  pipCanvas.height = 120;
+  cameraReady = true;
+  calStatus.textContent = 'Camera ready — press Begin.';
+  btnCal.disabled = false;
+}).catch(err => {
+  calStatus.textContent = '✗ Camera error: ' + err.message;
+  console.error('[CAM]', err);
+});
+
+/* ══════════════════════════════════════════════════════════════
+ *  PER-FRAME RESULTS
+ * ══════════════════════════════════════════════════════════════ */
+function onResults(results) {
+  const now = performance.now();
+
+  // ── PiP canvas: draw nose dot ──
+  pipCtx.clearRect(0, 0, 160, 120);
+
+  if (!results.multiFaceLandmarks?.length) {
+    nodDot.className = '';
+    return;
+  }
+
+  const lm       = results.multiFaceLandmarks[0];
+  const forehead = lm[10];
+  const nose     = lm[1];
+  const chin     = lm[152];
+  const faceH    = Math.abs(chin.y - forehead.y) || 0.001;
+  const rawNoseY = (nose.y - forehead.y) / faceH;
+
+  // Draw subtle nose dot on PiP
+  pipCtx.beginPath();
+  pipCtx.arc(nose.x * 160, nose.y * 120, 3, 0, Math.PI * 2);
+  pipCtx.fillStyle = 'rgba(120, 180, 255, 0.7)';
+  pipCtx.fill();
+
+  // ── EMA smoothing ──
+  smoothedNoseY = smoothedNoseY === null
+    ? rawNoseY
+    : SMOOTHING * rawNoseY + (1 - SMOOTHING) * smoothedNoseY;
+
+  // ── Calibration sampling ──
+  if (calibrating) {
+    calSamples.push({ y: smoothedNoseY, h: faceH });
+    const pct = calSamples.length / CAL_FRAMES;
+    calRingFill.style.background =
+      `conic-gradient(rgba(122,155,186,0.5) ${pct * 360}deg, transparent 0deg)`;
+
+    if (calSamples.length >= CAL_FRAMES) finishCalibration();
+    return;
+  }
+
+  // ── Nod detection (only when reading) ──
+  if (!readingActive || baselineNoseY === null) return;
+
+  const dy = smoothedNoseY - baselineNoseY;
+
+  // Adaptive threshold — compensate for distance shifts
+  let adaptiveThreshold = NOD_BASE_THRESHOLD;
+  if (refFaceHeight > 0) {
+    const sizeRatio = faceH / refFaceHeight;
+    adaptiveThreshold = NOD_BASE_THRESHOLD /
+      Math.max(0.3, 1 + NOD_DISTANCE_SCALE * (sizeRatio - 1));
+  }
+
+  const inCooldown = (now - lastNodTime) < NOD_COOLDOWN_MS;
+
+  // ── Nod state machine ──
+  if (!inCooldown) {
+    if (nodPhase === 'IDLE' && dy > adaptiveThreshold) {
+      nodPhase = 'DOWN';
+      nodArmed = true;
+    } else if (nodPhase === 'DOWN' && nodArmed && dy < adaptiveThreshold * 0.3) {
+      // Return stroke — nod complete → TURN PAGE
+      nodPhase    = 'IDLE';
+      nodArmed    = false;
+      lastNodTime = now;
+
+      console.log(`[NOD → PAGE]  dy=${dy.toFixed(4)}  thresh=${adaptiveThreshold.toFixed(4)}`);
+      nextPage();
+    }
+  } else {
+    nodPhase = 'IDLE';
+    nodArmed = false;
+  }
+
+  // ── PiP nod indicator ──
+  nodDot.className = nodArmed ? 'armed' : (inCooldown ? 'nod' : '');
+}
+</script>
+</body>
+</html>

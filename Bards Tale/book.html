@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lone Cub and Old Wolf</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{
+  margin:0;
+  background:#0b0b0e;
+  height:100vh;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  font-family:serif;
+  color:#e6e6ea;
+  overflow:hidden;
+}
+#stage{position:relative;width:720px;height:100vh}
+
+/* Title / Ack */
+#title,#ack{
+  position:absolute;
+  left:50%;
+  transform:translateX(-50%);
+  text-align:center;
+  display:none;
+}
+#title{font-size:48px}
+#ack{font-size:20px}
+
+/* Bard */
+#bard{
+  position:absolute;
+  left:50%;
+  transform:translateX(-50%);
+  font-size:16px;
+  opacity:1; /* NO FADING */
+}
+
+/* Circle */
+#circleWrap{
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  width:140px;
+  height:140px;
+  border-radius:50%;
+  overflow:hidden;
+  opacity:.4;
+}
+#mirror{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:.6}
+#circle{position:absolute;inset:0;border:2px solid rgba(120,255,180,.5);border-radius:50%}
+#ring{
+  position:absolute;
+  inset:-3px;
+  border-radius:50%;
+  background:conic-gradient(rgba(120,255,180,.9) 0deg, transparent 0deg);
+  mask:radial-gradient(transparent 62%,#000 63%);
+  opacity:1; /* ALWAYS VISIBLE */
+}
+
+/* Story */
+#page{
+  position:absolute;
+  top:calc(50% + 120px);
+  left:0;
+  width:100%;
+  height:420px;
+  display:none;
+  justify-content:center;
+}
+#content{width:100%;white-space:pre-wrap;line-height:1.55;font-size:15.5px}
+
+/* Dot */
+#dot{
+  position:absolute;
+  left:50%;
+  width:10px;
+  height:10px;
+  background:#7fffd4;
+  border-radius:50%;
+  transform:translate(-50%,-50%);
+}
+</style>
+</head>
+
+<body>
+<div id="stage">
+  <div id="title">Lone Cub and Old Wolf</div>
+  <div id="ack">For my Dad.</div>
+  <div id="bard"></div>
+
+  <div id="circleWrap">
+    <video id="mirror" autoplay playsinline muted></video>
+    <div id="ring"></div>
+    <div id="circle"></div>
+  </div>
+
+  <div id="page"><div id="content"></div></div>
+  <div id="dot"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+<script>
+/* CONFIG */
+const ARRIVE_MS=1200, SETTLE_MS=900, HOLD_MS=8000;
+const PAUSE_MS=3000;
+const STILL_TOL=0.025;
+const DOT_GAIN=2.0, NOD_DIST=26, NOD_DWELL=420;
+
+/* STORY */
+const pages=[/* your 10 pages here */];
+
+/* DOM */
+const title=document.getElementById("title");
+const ack=document.getElementById("ack");
+const bard=document.getElementById("bard");
+const circle=document.getElementById("circleWrap");
+const ring=document.getElementById("ring");
+const mirror=document.getElementById("mirror");
+const page=document.getElementById("page");
+const content=document.getElementById("content");
+const dot=document.getElementById("dot");
+
+/* STATE */
+let phase="ARRIVE";
+let calibrationActive=true;
+let ready=false;
+
+let arriveT=null, settleT=null, hold=0;
+let lastCx=null,lastCy=null,lastT=null;
+let baseDot=null,nodT=null,idx=0;
+
+/* Layout */
+function layout(){
+  const r=circle.getBoundingClientRect();
+  bard.style.top=(r.top-30)+"px";
+  title.style.top=(r.top-130)+"px";
+  ack.style.top=(r.top-130)+"px";
+}
+window.addEventListener("resize",layout);
+
+/* Camera */
+navigator.mediaDevices.getUserMedia({video:true}).then(s=>{
+  mirror.srcObject=s; mirror.play();
+  setTimeout(()=>{ready=true;layout()},500);
+});
+
+/* Mediapipe */
+const mesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+mesh.setOptions({maxNumFaces:1,refineLandmarks:true});
+
+function inCircle(cx,cy){
+  const dx=(cx-.5)/.5, dy=(cy-.5)/.5;
+  return dx*dx+dy*dy<=1;
+}
+function setDot(cy){
+  if(!ready) return;
+  const r=circle.getBoundingClientRect();
+  let y=r.top+r.height*(.5+(cy-.5)*DOT_GAIN);
+  y=Math.max(r.top,Math.min(r.bottom,y));
+  dot.style.top=y+"px";
+  return y;
+}
+function setRing(p){
+  ring.style.background=`conic-gradient(rgba(120,255,180,.9) ${p*360}deg, transparent 0deg)`;
+}
+
+mesh.onResults(res=>{
+  if(!ready||!res.multiFaceLandmarks) return;
+
+  /* ALWAYS compute dt */
+  const now=performance.now();
+  if(!lastT) lastT=now;
+  const dt=now-lastT;
+  lastT=now;
+
+  const lm=res.multiFaceLandmarks[0];
+  const cx=(lm[234].x+lm[454].x)/2;
+  const cy=(lm[10].y+lm[152].y)/2;
+  const dotY=setDot(cy);
+
+  /* ---------------- CALIBRATION ---------------- */
+  if(calibrationActive){
+
+    if(phase==="ARRIVE"){
+      bard.textContent="Ah. You are here. Let’s get started.";
+      if(!inCircle(cx,cy)){arriveT=null;return;}
+      if(!arriveT) arriveT=now;
+      if(now-arriveT>ARRIVE_MS){phase="SETTLE";}
+      return;
+    }
+
+    if(phase==="SETTLE"){
+      bard.textContent="Good, good. Keep still for a second, please.";
+      if(!inCircle(cx,cy)){phase="ARRIVE";return;}
+      if(!settleT) settleT=now;
+      if(now-settleT>SETTLE_MS){phase="HOLD";}
+      return;
+    }
+
+    if(phase==="HOLD"){
+      bard.textContent="Almost there.";
+
+      if(!inCircle(cx,cy)){
+        phase="ARRIVE";
+        hold=0;
+        return;
+      }
+
+      const dx=Math.abs(cx-(lastCx??cx));
+      const dy=Math.abs(cy-(lastCy??cy));
+      lastCx=cx; lastCy=cy;
+
+      if(dx<STILL_TOL && dy<STILL_TOL) hold+=dt;
+      else hold=Math.max(0,hold-dt);
+
+      setRing(Math.min(hold/HOLD_MS,1));
+
+      if(hold>=HOLD_MS){
+        /* COMPLETE */
+        bard.textContent="Everything looks good. We can begin now.";
+
+        setTimeout(()=>{
+          bard.textContent="Just nod to turn the page. Enjoy.";
+
+          setTimeout(()=>{
+            /* FINAL HANDOFF */
+            calibrationActive=false;
+            phase="READ";
+
+            /* SHOW STORY FIRST */
+            page.style.display="flex";
+            content.textContent=pages[0];
+
+            /* THEN show title/ack */
+            title.style.display="block";
+            setTimeout(()=>{
+              title.style.display="none";
+              ack.style.display="block";
+            },6000);
+
+            /* THEN (optional) hide HUD */
+            setTimeout(()=>{
+              bard.style.display="none";
+              circle.style.display="none";
+              dot.style.display="none";
+            },8000);
+
+          },PAUSE_MS);
+
+        },PAUSE_MS);
+      }
+      return;
+    }
+  }
+
+  /* ---------------- READING MODE ---------------- */
+  if(!calibrationActive && phase==="READ"){
+
+    if(baseDot===null){
+      baseDot=dotY;
+      return;
+    }
+
+    if(Math.abs(dotY-baseDot)>NOD_DIST){
+      if(!nodT) nodT=now;
+
+      if(now-nodT>NOD_DWELL){
+        idx=Math.min(idx+1,pages.length-1);
+        content.textContent=pages[idx];
+        baseDot=null;
+        nodT=null;
+      }
+
+    } else {
+      nodT=null;
+    }
+  }
+});
+
+/* Loop */
+async function loop(){
+  if(mirror.readyState>=2) await mesh.send({image:mirror});
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

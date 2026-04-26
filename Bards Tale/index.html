@@ -1,0 +1,1857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lone Cub and Old Wolf — Nod Reader</title>
+
+  <!-- Mediapipe (head-pose / nod detection) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432234/camera_utils.js" crossorigin="anonymous"></script>
+
+  <!-- WebGazer.js (eye-tracking / gaze dwell detection) — jsDelivr CDN (CORS-safe) -->
+  <!-- WebGazer.js DISABLED [2026-04-25]: eye-tracking deferred to dedicated session.
+       MediaPipe + WebGazer were competing for camera access — WebGazer received
+       null gaze data. To re-enable: uncomment script tag below + flip GAZE_CONFIG.ENABLED to true.
+  <script>
+    (function nukeWebgazerCache() {
+      try {
+        var keys = ['webgazerGlobalData', 'webgazerGlobalSettings'];
+        for (var i = 0; i < keys.length; i++) {
+          if (window.localStorage && window.localStorage.getItem(keys[i]) !== null) {
+            window.localStorage.removeItem(keys[i]);
+            console.log('Pre-init: Cleared ' + keys[i] + ' from localStorage');
+          }
+        }
+      } catch (err) {
+        console.warn('Pre-init: localStorage clear failed: ' + err.message);
+      }
+    })();
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/webgazer@2.1.0/dist/webgazer.min.js" crossorigin="anonymous"></script>
+  -->
+
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width:100%; height:100%; overflow:hidden; background:#0a0a0f; color:#e0dcd0; font-family:'Georgia',serif; user-select:none; -webkit-user-select:none; }
+    body.end-fade { background:#0d0d14; }
+
+    #ritual-overlay { position:fixed; inset:0; z-index:1000; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#0a0a0f; transition:opacity 1.2s ease; }
+    #ritual-overlay.fade-out { opacity:0; pointer-events:none; }
+    #ritual-overlay.hidden { display:none; }
+
+    #consent-screen { text-align:center; animation:fadeInSlow 1.5s ease; }
+    #consent-title { font-size:2.4rem; letter-spacing:0.15em; color:#c9b97a; margin-bottom:0.5em; font-weight:300; }
+    #consent-subtitle { font-size:1rem; color:#8a8577; margin-bottom:2em; line-height:1.6; max-width:28em; }
+    #consent-begin-btn { font-family:inherit; font-size:1.1rem; padding:0.8em 2.4em; background:transparent; border:1px solid #c9b97a; color:#c9b97a; cursor:pointer; letter-spacing:0.1em; border-radius:2px; transition:all 0.4s ease; }
+    #consent-begin-btn:hover { background:#c9b97a; color:#0a0a0f; }
+    #consent-begin-btn:disabled { opacity:0.4; cursor:default; }
+
+    #ritual-sequence { display:none; text-align:center; flex-direction:column; align-items:center; justify-content:center; }
+    #ritual-phase-label { font-size:1.6rem; color:#c9b97a; letter-spacing:0.2em; opacity:0; transition:opacity 0.8s ease; }
+    #ritual-phase-label.visible { opacity:1; }
+    #ritual-sublabel { font-size:0.9rem; color:#6a6558; font-style:italic; letter-spacing:0.06em; margin-top:0.6em; opacity:0; transition:opacity 0.8s ease; min-height:1.4em; }
+    #ritual-sublabel.visible { opacity:1; }
+    #ritual-phase-dots { display:flex; gap:10px; margin-top:2em; }
+    .ritual-dot { width:8px; height:8px; border-radius:50%; background:#2a2520; border:1px solid #3a352e; transition:background 0.6s ease, border-color 0.6s ease, box-shadow 0.6s ease; }
+    .ritual-dot.lit { background:#c9b97a; border-color:#c9b97a; box-shadow:0 0 6px rgba(201,185,122,0.4); }
+
+    #calibration-overlay { position:fixed; inset:0; z-index:900; display:none; background:rgba(10,10,15,0.95); flex-direction:column; align-items:center; justify-content:center; }
+    #calibration-overlay.active { display:flex; }
+    #cal-instruction { font-size:1.2rem; color:#8a8577; margin-bottom:2em; text-align:center; line-height:1.6; transition:opacity 0.6s ease; }
+    #cal-phase-label { font-size:0.9rem; color:#5a5549; margin-bottom:1em; letter-spacing:0.15em; text-transform:uppercase; }
+    #cal-narrative { font-size:0.95rem; color:#6a6558; font-style:italic; letter-spacing:0.04em; margin-top:1em; opacity:0; transition:opacity 0.6s ease; min-height:1.4em; text-align:center; }
+    #cal-narrative.visible { opacity:1; }
+    @keyframes calCompleteGlow { 0% { box-shadow:0 0 0 rgba(201,185,122,0); } 50% { box-shadow:0 0 60px rgba(201,185,122,0.25); } 100% { box-shadow:0 0 0 rgba(201,185,122,0); } }
+    #calibration-overlay.complete-glow { animation:calCompleteGlow 1.8s ease; }
+    .cal-dot { position:absolute; width:76px; height:76px; border-radius:50%; border:2px solid #c9b97a; opacity:0; transition:opacity 0.5s ease, transform 0.5s ease, background 0.6s ease, border-color 0.6s ease; display:flex; align-items:center; justify-content:center; }
+    .cal-dot.active { opacity:1; animation:calPulse 2s ease-in-out infinite; }
+    .cal-dot.locked { background:rgba(122,154,90,0.3); border-color:#7a9a5a; animation:none; }
+    .cal-dot-inner { width:12px; height:12px; border-radius:50%; background:#c9b97a; z-index:2; }
+    .cal-dot.locked .cal-dot-inner { background:#7a9a5a; }
+    /* Progress ring — fills as user holds gaze on the dot */
+    .cal-dot-progress { position:absolute; inset:-4px; border-radius:50%; background:conic-gradient(#7a9a5a 0deg, transparent 0deg); opacity:0; transition:opacity 0.3s ease; mask:radial-gradient(circle, transparent 36px, black 38px); -webkit-mask:radial-gradient(circle, transparent 36px, black 38px); }
+    .cal-dot.training .cal-dot-progress { opacity:0.9; }
+    .cal-dot.locked .cal-dot-progress { opacity:0; }
+    #cal-progress { position:absolute; bottom:60px; font-size:0.85rem; color:#5a5549; letter-spacing:0.1em; }
+    @keyframes calPulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.08); } }
+
+    #book-container { position:fixed; inset:0; z-index:100; display:none; align-items:center; justify-content:center; background:#0a0a0f; }
+    #book-container.active { display:flex; }
+    #book-cover { width:340px; height:480px; background:linear-gradient(135deg,#2a2520,#1a1815); border:1px solid #3a352e; border-radius:4px 12px 12px 4px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; box-shadow:4px 4px 20px rgba(0,0,0,0.6); transition:transform 0.3s ease, box-shadow 0.3s ease; }
+    #book-cover:hover { transform:scale(1.02); box-shadow:6px 6px 30px rgba(0,0,0,0.8); }
+    #book-cover.hidden { display:none; }
+    #book-cover-title { font-size:1.6rem; color:#c9b97a; letter-spacing:0.12em; margin-bottom:0.4em; text-align:center; padding:0 1em; }
+    #book-cover-author { font-size:0.85rem; color:#8a8577; letter-spacing:0.08em; }
+    #cover-ornament { color:#3a352e; font-size:0.8rem; letter-spacing:0.3em; margin:1.2em 0 1.6em 0; }
+    #book-cover-prompt { position:absolute; bottom:30px; font-size:0.75rem; color:#5a5549; letter-spacing:0.08em; animation:breathe 3s ease-in-out infinite; }
+
+    #book-spread { display:none; width:1100px; max-width:99vw; height:96vh; max-height:96vh; background:#1a1815; border-radius:4px; box-shadow:0 8px 40px rgba(0,0,0,0.7); position:relative; }
+    #book-spread.active { display:flex; }
+    .book-page { flex:1; padding:32px 36px; display:flex; flex-direction:column; justify-content:flex-start; overflow-y:auto; scrollbar-width:none; }
+    .book-page::-webkit-scrollbar { display:none; }
+    #page-left { border-right:1px solid #2a2520; }
+    .page-content { font-size:1.05rem; line-height:1.8; color:#d4cfbf; font-family:'Georgia',serif; }
+    #page-number-left,#page-number-right { position:absolute; bottom:16px; font-size:0.75rem; color:#5a5549; }
+    #page-number-left { left:36px; } #page-number-right { right:36px; }
+    #book-spine { position:absolute; left:50%; top:0; bottom:0; width:2px; background:linear-gradient(to bottom,transparent,#2a2520 10%,#2a2520 90%,transparent); transform:translateX(-50%); }
+    .book-page.turning { animation:pageTurn 0.4s ease; }
+    @keyframes pageTurn { 0%{opacity:1;transform:translateX(0);}50%{opacity:0.3;transform:translateX(-8px);}100%{opacity:1;transform:translateX(0);} }
+
+    #reading-progress { position:absolute; bottom:0; left:0; height:2px; background:linear-gradient(90deg,#c9b97a,#a89860); width:0%; transition:width 0.6s ease; border-radius:0 0 4px 4px; z-index:10; }
+
+    #end-ceremony { display:none; flex-direction:column; align-items:center; justify-content:center; text-align:center; animation:fadeInSlow 1.5s ease; }
+    #end-ceremony.active { display:flex; }
+    #end-ceremony-title { font-size:1.8rem; color:#c9b97a; letter-spacing:0.12em; margin-bottom:0.3em; }
+    #end-ceremony-fin { font-size:1rem; color:#8a8577; letter-spacing:0.2em; margin-bottom:1.5em; }
+    #end-ceremony-message { font-size:0.9rem; color:#6a6558; font-style:italic; line-height:1.6; max-width:24em; margin-bottom:2em; }
+    #end-return-btn { font-family:inherit; font-size:0.9rem; padding:0.6em 1.8em; background:transparent; border:1px solid #3a352e; color:#8a8577; cursor:pointer; letter-spacing:0.08em; border-radius:2px; transition:all 0.4s ease; }
+    #end-return-btn:hover { border-color:#c9b97a; color:#c9b97a; }
+
+    #nod-indicator { position:fixed; top:20px; right:20px; z-index:800; width:14px; height:14px; border-radius:50%; background:#3a352e; border:1px solid #5a5549; transition:background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; }
+    #nod-indicator.nod-flash { background:#c9b97a; transform:scale(1.6); box-shadow:0 0 12px rgba(201,185,122,0.6); }
+    #nod-indicator.camera-active { background:#5a7a4a; border-color:#7a9a5a; }
+
+    #debug-panel { position:fixed; bottom:0; left:0; right:0; z-index:2000; max-height:220px; overflow-y:auto; background:rgba(0,0,0,0.92); border-top:1px solid #333; font-family:'Consolas','Monaco',monospace; font-size:0.72rem; color:#8f8; padding:8px 12px; display:none; scrollbar-width:thin; }
+    #debug-panel.active { display:block; }
+    #debug-toggle { position:fixed; bottom:8px; left:8px; z-index:2001; width:28px; height:28px; border-radius:50%; background:rgba(0,0,0,0.6); border:1px solid #444; color:#8f8; font-size:0.7rem; cursor:pointer; display:flex; align-items:center; justify-content:center; font-family:monospace; }
+    #debug-toggle:hover { background:rgba(0,0,0,0.85); }
+    .debug-line { padding:1px 0; } .debug-line.warn { color:#ff8; } .debug-line.error { color:#f88; } .debug-line.nod { color:#8cf; } .debug-line.info { color:#aaa; }
+
+    #camera-video { position:fixed; top:-9999px; left:-9999px; width:640px; height:480px; }
+    #debug-face-canvas { position:fixed; top:20px; left:20px; z-index:1999; width:160px; height:120px; border:1px solid #333; border-radius:4px; display:none; background:#000; }
+    #debug-face-canvas.active { display:block; }
+
+    @keyframes fadeInSlow { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes breathe { 0%,100%{opacity:0.5;}50%{opacity:1;} }
+
+    /* === GAZE TRACKING LAYER === */
+    /* Gaze cursor — dot showing where WebGazer thinks you're looking */
+    #gaze-cursor { position:fixed; width:24px; height:24px; border-radius:50%; background:rgba(201,185,122,0.35); border:2px solid rgba(201,185,122,0.6); transform:translate(-50%,-50%); pointer-events:none; z-index:9999; display:none; transition:left 0.06s linear, top 0.06s linear; }
+    #gaze-cursor.active { display:block; }
+    #gaze-cursor.dwelling { background:rgba(201,185,122,0.6); border-color:rgba(201,185,122,1.0); box-shadow:0 0 16px rgba(201,185,122,0.6); }
+
+    /* Dwell progress ring — shows how close you are to triggering a page turn */
+    #gaze-dwell-ring { position:fixed; width:48px; height:48px; transform:translate(-50%,-50%); pointer-events:none; z-index:10000; display:none; }
+    #gaze-dwell-ring.active { display:block; }
+    #gaze-dwell-ring svg { width:100%; height:100%; }
+    #gaze-dwell-ring circle { fill:none; stroke:rgba(201,185,122,0.8); stroke-width:3; stroke-dasharray:113; stroke-dashoffset:113; transition:stroke-dashoffset 0.1s linear; transform:rotate(-90deg); transform-origin:center; }
+
+    /* Gaze hotspots — regions on the book spread */
+    .gaze-hotspot { position:absolute; z-index:11; pointer-events:none; }
+    #gaze-hotspot-forward { bottom:0; right:0; width:20%; height:25%; }
+    #gaze-hotspot-back { bottom:0; left:0; width:20%; height:25%; }
+    #gaze-hotspot-center { top:10%; left:15%; width:70%; height:70%; }
+
+    /* Page-turn target indicator — DISABLED during demo (gaze does not turn pages).
+       Re-enable when directional gaze tracking is stable. */
+    #page-turn-target { display:none; }
+    #page-turn-target::after { content:'›'; font-size:2rem; color:#c9b97a; font-family:Georgia,serif; text-shadow:0 0 8px rgba(201,185,122,0.3); }
+    #page-turn-target.gaze-near { opacity:0.7; }
+    #page-turn-target.gaze-dwelling { opacity:1.0; animation:target-pulse 0.8s ease-in-out infinite; }
+    @keyframes target-pulse { 0%,100%{transform:scale(1);} 50%{transform:scale(1.3);} }
+
+    /* Gaze status indicator — next to nod indicator */
+    #gaze-indicator { position:fixed; top:20px; right:42px; z-index:800; width:14px; height:14px; border-radius:50%; background:#3a352e; border:1px solid #5a5549; transition:background 0.2s ease; }
+    #gaze-indicator.gaze-active { background:#4a7a9a; border-color:#5a9aba; }
+    #gaze-indicator.gaze-dwelling { background:#c9b97a; box-shadow:0 0 8px rgba(201,185,122,0.5); }
+
+    /* Hide WebGazer's default video preview */
+    #webgazerVideoFeed, #webgazerVideoCanvas, #webgazerFaceOverlay, #webgazerFaceFeedbackBox, #webgazerGazeDot { display:none !important; }
+
+    @media (max-width:820px) {
+      #book-spread { flex-direction:column; height:auto; max-height:95vh; }
+      .book-page { min-height:45vh; }
+      #page-left { border-right:none; border-bottom:1px solid #2a2520; }
+      #book-spine { display:none; }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="ritual-overlay">
+    <div id="consent-screen">
+      <div id="consent-title">Nod Reader</div>
+      <div id="consent-subtitle">
+        This experience uses your camera to detect head nods for page turning.<br>
+        No video data leaves your device — all processing is local.<br><br>
+        Requires <strong>HTTPS</strong> or <strong>localhost</strong>.
+      </div>
+      <button id="consent-begin-btn">Begin</button>
+    </div>
+
+    <div id="ritual-sequence">
+      <div id="ritual-phase-label"></div>
+      <div id="ritual-sublabel"></div>
+      <div id="ritual-phase-dots">
+        <div class="ritual-dot" id="ritual-dot-0"></div>
+        <div class="ritual-dot" id="ritual-dot-1"></div>
+        <div class="ritual-dot" id="ritual-dot-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="calibration-overlay">
+    <div id="cal-phase-label"></div>
+    <div id="cal-instruction">Look at each dot as it appears.<br>Take your time — there's no rush.</div>
+    <div id="cal-narrative"></div>
+
+    <div class="cal-dot" id="cal-dot-0"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-1"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-2"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-3"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-4"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-5"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-6"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-7"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+    <div class="cal-dot" id="cal-dot-8"><div class="cal-dot-progress"></div><div class="cal-dot-inner"></div></div>
+
+    <div id="cal-progress"></div>
+  </div>
+
+  <div id="book-container">
+    <div id="book-cover">
+      <div id="book-cover-title">Lone Cub and Old Wolf</div>
+      <div id="book-cover-author">by Mickey W.</div>
+      <div id="cover-ornament">═══✦═══</div>
+      <div id="book-cover-prompt">nod, gaze, or press space to open</div>
+    </div>
+
+    <div id="book-spread">
+      <div id="book-spine"></div>
+      <div class="book-page" id="page-left">
+        <div class="page-content" id="page-left-content"></div>
+      </div>
+      <div class="book-page" id="page-right">
+        <div class="page-content" id="page-right-content"></div>
+      </div>
+      <!-- Gaze hotspots for dwell-based page turning -->
+      <div id="gaze-hotspot-forward" class="gaze-hotspot" title="Gaze here to turn forward"></div>
+      <div id="gaze-hotspot-back" class="gaze-hotspot" title="Gaze here to go back"></div>
+      <div id="gaze-hotspot-center" class="gaze-hotspot"></div>
+      <!-- Subtle page-turn target indicator -->
+      <div id="page-turn-target"></div>
+      <div id="page-number-left"></div>
+      <div id="page-number-right"></div>
+      <div id="reading-progress"></div>
+    </div>
+
+    <div id="end-ceremony">
+      <div id="end-ceremony-title">Lone Cub and Old Wolf</div>
+      <div id="end-ceremony-fin">— Fin —</div>
+      <div id="end-ceremony-message">The story rests. You may return whenever you wish.</div>
+      <button id="end-return-btn">Return to Cover</button>
+    </div>
+  </div>
+
+  <div id="nod-indicator" title="Nod detector status"></div>
+  <div id="gaze-indicator" title="Gaze tracker status"></div>
+
+  <!-- Gaze cursor and dwell ring (positioned by JS) -->
+  <div id="gaze-cursor"></div>
+  <div id="gaze-dwell-ring"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18"/></svg></div>
+
+  <button id="debug-toggle" title="Toggle debug panel (D key)">⚙</button>
+  <div id="debug-panel"></div>
+  <canvas id="debug-face-canvas" width="640" height="480"></canvas>
+
+  <video id="camera-video" autoplay playsinline></video>
+
+  <script>
+  (function () {
+    'use strict';
+
+    // SECTION 1: CONFIG
+    const NOD_CONFIG = {
+      BASE_THRESHOLD: 0.06,
+      DISTANCE_SCALE: 0.55,
+      COOLDOWN_MS: 1200,
+      SMOOTHING: 0.30,
+      TARGET_RADIUS_PX: 38
+    };
+
+    const RITUAL_CONFIG = {
+      CHIME_DURATION_MS: 3000,
+      THX_DURATION_MS: 4500,
+      INTRO_DURATION_MS: 4000,
+      PHASE_GAP_MS: 800,
+      CAL_DOT_DWELL_MS: 1800,
+      CAL_DOT_PAUSE_MS: 600,
+      COVER_LINGER_MS: 1500
+    };
+
+    const BOOK_CONFIG = { PAGES_PER_SPREAD: 2 };
+
+    // GAZE_CONFIG — WebGazer eye-tracking dwell detection
+    // [2026-04-25] DISABLED: WebGazer + MediaPipe both want the camera; WebGazer received null gaze data.
+    // To re-enable: flip ENABLED to true AND uncomment WebGazer script tag at top of file.
+    const GAZE_CONFIG = {
+      DWELL_MS: 1200,               /* ← ms of sustained gaze on hotspot to trigger turn */
+      DWELL_FALLBACK_MS: 1800,      /* ← extended dwell if calibration was weak */
+      COOLDOWN_MS: 1500,            /* ← minimum ms between gaze-triggered page turns */
+      SMOOTHING_ALPHA: 0.25,        /* ← exponential smoothing for gaze coordinates */
+      SACCADE_THRESHOLD: 120,       /* ← px/frame — ignore fast eye jumps */
+      MICRO_BREAK_MS: 150,          /* ← tolerate brief glance-aways without resetting dwell */
+      CURSOR_VISIBLE: false,        /* ← show gaze cursor dot (can toggle in debug) */
+      ENABLED: false                /* ← master toggle for gaze-based page turning (DISABLED) */
+    };
+
+    // AUDIO_MANIFEST — rewritten [2026-04-24] per Mickey's spread-by-spread order.
+    // All "at" times are seconds after spread start. "muffled" = lower volume.
+    // Loops continue across spreads via key+continue.
+    const AUDIO_MANIFEST = {
+      ambient: {
+        world:  { src: 'Audio/Ambient-world.mp3',  loop: true, volume: 0.20 },
+        battle: { src: 'Audio/Take_Five_battle_music.mp3', loop: true, volume: 0.28, startAt: 0 },
+        transitionAtSpread: 5,
+        transitionAtTime: 32,  /* ← seconds into spread 5 before Take Five crossfade kicks in (was instant) */
+        duckTo: 0.08,
+        duckMs: 800,
+        crossfadeMs: 3000
+      },
+
+      thx: { src: 'Audio/THX_sound.mp3' },
+
+      spreads: {
+        // ═══ Spread 0: Title + Acknowledgement — ambient starts via openBook() ═══
+
+        // ═══ Spread 1: pages 2–3 (truck stop, peeing, beetle, thunder, cat scream) ═══
+        // Ambient, idle truck muffled, peeing looped x3, wind looped x3, thunder looped x2, cat scream at end
+        1: {
+          sfx: [
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 1.0,  loop: true,  key: 'truck-idle', volume: 0.10 },
+            { file: 'Audio/Sound_peeing_grass.mp3',         at: 2.0,  loop: true,  key: 'peeing', volume: 0.5,
+              fadeOutAt: 30.0, fadeDurationMs: 2000 },
+            { file: 'Audio/Wind_gust_sound_effect.mp3',     at: 5.0,  loop: true,  key: 'wind', volume: 0.5,
+              fadeOutAt: 45.0, fadeDurationMs: 2000 },
+            { file: 'Audio/Distant_thunder.mp3',            at: 20.0, loop: true,  key: 'thunder', volume: 0.5,
+              fadeOutAt: 50.0, fadeDurationMs: 2000 },
+            { file: 'Audio/Cat_screaming.mp3',              at: 55.0, loop: false, volume: 0.9 }
+          ]
+        },
+
+        // ═══ Spread 2: pages 4–5 (dad wanders, girl on roof) ═══
+        // Ambient, idle truck muffled continues, cat growl, man grunts, satellite dish
+        2: {
+          sfx: [
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 0,    loop: true,  key: 'truck-idle', continue: true, volume: 0.10 },
+            { file: 'Audio/Cat_growl_sound_effect.mp3',     at: 5.0,  loop: false, volume: 0.5 },
+            { file: 'Audio/Male_grunt_in_pain.mp3',         at: 18.0, loop: false, volume: 0.7 },
+            { file: 'Audio/Satellite_turning_sound_effect.mp3', at: 30.0, loop: false, volume: 0.4 }
+          ]
+        },
+
+        // ═══ Spread 3: pages 6–7 (catching dad, flowers, chime) ═══
+        // Ambient, idle truck muffled continues, red alert muffled near end
+        3: {
+          sfx: [
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 0,    loop: true,  key: 'truck-idle', continue: true, volume: 0.10 },
+            { file: 'Audio/Star_Trek_red_alert.mp3',        at: 35.0, loop: false, volume: 0.15 }
+          ]
+        },
+
+        // ═══ Spread 4: pages 8–9 (bandits spotted, AI voice, cat bristles) ═══
+        // Ambient, idle truck muffled, red alert FULL, cat growl at end
+        4: {
+          sfx: [
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 0,    loop: true,  key: 'truck-idle', continue: true, volume: 0.10 },
+            { file: 'Audio/Star_Trek_red_alert.mp3',        at: 1.0,  loop: false, volume: 0.75 },
+            { file: 'Audio/Cat_growl_sound_effect.mp3',     at: 18.0, loop: false, volume: 0.5 },
+            { file: 'Audio/Car_driving.mp3',                at: 22.0, loop: true,  key: 'car-driving', volume: 0.05 } /* ← faint distant car — bandits approaching */
+          ]
+        },
+
+        // ═══ Spread 5: pages 10–11 (scoop dad, battle prep, shutters, Take Five) ═══
+        // Ambient→Take Five. Old man laughing, boots loud, knocking over, shutters loop til next spread,
+        // car driving muffled, motocross muffled. Truck idle fades as they start moving.
+        5: {
+          sfx: [
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 0,    loop: true,  key: 'truck-idle', continue: true, volume: 0.10,
+              fadeOutAt: 25.0, fadeDurationMs: 3000 },
+            { file: 'Audio/Old_man_laughing.mp3',           at: 3.0,  loop: false, volume: 0.6 },
+            { file: 'Audio/Hitting_ground_sound_effect.mp3', at: 10.0, loop: false, volume: 0.7 },
+            { file: 'Audio/Knocking-over_sound_effect.mp3', at: 13.0, loop: false, volume: 0.6 },
+            { file: 'Audio/Closing_automated-shutters.mp3', at: 20.0, loop: true,  key: 'shutters', volume: 0.5 },
+            { file: 'Audio/Car_driving.mp3',                at: 0,    loop: true,  key: 'car-driving', continue: true, volume: 0.10 }, /* ← continues from spread 4, slight rise */
+            { file: 'Audio/Motocross_sound_effect.mp3',     at: 30.0, loop: true,  key: 'motocross', volume: 0.12 }
+          ]
+        },
+
+        // ═══ Spread 6: pages 12–13 (chase begins, cannon, countermeasure) ═══
+        // Take Five. Shutters ending, truck moving, car/motocross muffled,
+        // turret, cannon, countermeasure, cannon muffled
+        6: {
+          sfx: [
+            { file: 'Audio/Closing_automated-shutters.mp3', at: 0,    loop: true,  key: 'shutters', continue: true, volume: 0.5,
+              fadeOutAt: 3.0, fadeDurationMs: 1500 },
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 2.0,  loop: true,  key: 'truck-moving', volume: 0.20 },
+            { file: 'Audio/Car_driving.mp3',                at: 0,    loop: true,  key: 'car-driving', continue: true, volume: 0.18 }, /* ← rising: getting closer */
+            { file: 'Audio/Motocross_sound_effect.mp3',     at: 0,    loop: true,  key: 'motocross', continue: true, volume: 0.12 },
+            { file: 'Audio/Turret_rotating_sound_effect.mp3', at: 18.0, loop: false, volume: 0.5 },
+            { file: 'Audio/Cannon_sound_effect.mp3',        at: 22.0, loop: false, volume: 0.7, key: 'cannon-1' },
+            { file: 'Audio/Smoke_countermeasure.mp3',       at: 26.0, loop: false, volume: 0.55 },
+            { file: 'Audio/Cannon_sound_effect.mp3',        at: 30.0, loop: false, volume: 0.35, key: 'cannon-2' }
+          ]
+        },
+
+        // ═══ Spread 7: pages 14–15 (bandits reassess, girl drinks) ═══
+        // Take Five, truck moving, car/motocross muffled, straw, drawer
+        7: {
+          sfx: [
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 0,    loop: true,  key: 'truck-moving', continue: true, volume: 0.20 },
+            { file: 'Audio/Car_driving.mp3',                at: 0,    loop: true,  key: 'car-driving', continue: true, volume: 0.25 }, /* ← closer still */
+            { file: 'Audio/Motocross_sound_effect.mp3',     at: 0,    loop: true,  key: 'motocross', continue: true, volume: 0.12 },
+            { file: 'Audio/Sucking_thru_straw_sound_effect.mp3', at: 12.0, loop: false, volume: 0.35 },
+            { file: 'Audio/Open_&_closing_drawer_sound_effect.mp3', at: 16.0, loop: false, volume: 0.3 }
+          ]
+        },
+
+        // ═══ Spread 8: pages 16–17 (road blockade, off-road, bikes surge) ═══
+        // Take Five, truck moving, car/motocross muffled→louder.
+        // Many sounds NOT IMPLEMENTED — placeholders commented out.
+        8: {
+          sfx: [
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 0,    loop: true,  key: 'truck-moving', continue: true, volume: 0.28 },
+            { file: 'Audio/Car_driving.mp3',                at: 0,    loop: true,  key: 'car-driving', continue: true, volume: 0.35,
+              fadeOutAt: 35.0, fadeDurationMs: 1500 }, /* ← PEAK volume — bandits at full chase, fade as truck pulls away */
+            { file: 'Audio/Motocross_sound_effect.mp3',     at: 0,    loop: true,  key: 'motocross', continue: true, volume: 0.25 }
+            // ── NOT IMPLEMENTED — add files and uncomment ──
+            // { file: 'Audio/Gravel_road.mp3',             at: 6.0,  loop: true,  key: 'gravel', volume: 0.4 },
+            // { file: 'Audio/Motorcycle_crash.mp3',        at: 18.0, loop: false, volume: 0.7 },
+            // { file: 'Audio/Turret_rotating_fast.mp3',    at: 22.0, loop: false, volume: 0.5 },
+            // { file: 'Audio/Tank_shot.mp3',               at: 25.0, loop: false, volume: 0.8 },
+            // { file: 'Audio/Car_exploding.mp3',           at: 27.0, loop: false, volume: 0.7 },
+            // { file: 'Audio/Metal_clanging.mp3',          at: 30.0, loop: false, volume: 0.6 },
+            // { file: 'Audio/Trapdoor_opening.mp3',        at: 33.0, loop: false, volume: 0.5 },
+            // { file: 'Audio/Boots_hitting_ground.mp3',    at: 35.0, loop: false, volume: 0.6 },
+            // { file: 'Audio/Gunshot.mp3',                 at: 38.0, loop: false, volume: 0.8 }
+          ]
+        },
+
+        // ═══ Spread 9: pages 18–19 (brake slam, collision, girl fires, mice) ═══
+        // Take Five, car/truck/motocross. Car+motocross slowly lose volume.
+        // All action SFX NOT IMPLEMENTED — placeholders commented out.
+        9: {
+          sfx: [
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 0,    loop: true,  key: 'truck-moving', continue: true, volume: 0.25 },
+            { file: 'Audio/Car_driving.mp3',                at: 0,    loop: true,  key: 'car-driving', volume: 0.15,
+              fadeOutAt: 35.0, fadeDurationMs: 5000 },
+            { file: 'Audio/Motocross_sound_effect.mp3',     at: 0,    loop: true,  key: 'motocross', continue: true, volume: 0.20,
+              fadeOutAt: 35.0, fadeDurationMs: 5000 }
+            // ── NOT IMPLEMENTED — add files and uncomment ──
+            // { file: 'Audio/Brakes_slamming.mp3',         at: 5.0,  loop: false, volume: 0.8 },
+            // { file: 'Audio/Truck_collision.mp3',         at: 7.0,  loop: false, volume: 0.75 },
+            // { file: 'Audio/Boots_on_metal.mp3',          at: 12.0, loop: false, volume: 0.5 },
+            // { file: 'Audio/Trapdoor_opening.mp3',        at: 14.0, loop: false, volume: 0.55 },
+            // { file: 'Audio/Gunshot.mp3',                 at: 16.0, loop: false, volume: 0.8 },
+            // { file: 'Audio/Fast_movement.mp3',           at: 22.0, loop: false, volume: 0.5 },
+            // { file: 'Audio/Screams.mp3',                 at: 24.0, loop: false, volume: 0.6 },
+            // { file: 'Audio/Mice_sounds.mp3',             at: 26.0, loop: false, volume: 0.5 }
+          ]
+        },
+
+        // ═══ Spread 10: pages 20–21 (gunshot, girl takes over) ═══
+        10: {
+          sfx: [
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 0,    loop: true,  key: 'truck-moving', continue: true, volume: 0.22 },
+            { file: 'Audio/Gunshot.mp3',                    at: 6.0,  loop: false, volume: 0.85 },
+            { file: 'Audio/Hitting_ground_sound_effect.mp3', at: 8.0,  loop: false, volume: 0.5 }
+          ]
+        },
+
+        // ═══ Spread 11: pages 22–23 (brake slam, girl fires, mice, escape) ═══
+        11: {
+          sfx: [
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 0,    loop: true,  key: 'truck-moving', continue: true, volume: 0.25 },
+            { file: 'Audio/Cannon_sound_effect.mp3',        at: 5.0,  loop: false, volume: 0.75 },
+            { file: 'Audio/Knocking-over_sound_effect.mp3', at: 7.0,  loop: false, volume: 0.7 },
+            { file: 'Audio/Gunshot.mp3',                    at: 16.0, loop: false, volume: 0.80 },
+            { file: 'Audio/Cat_growl_sound_effect.mp3',     at: 24.0, loop: false, volume: 0.45 }
+          ]
+        },
+
+        // ═══ Spread 12: pages 24–25 (slowing down, father hums, engine cuts) ═══
+        12: {
+          sfx: [
+            { file: 'Audio/Truck_engine_moving.mp3',        at: 0,    loop: true,  key: 'truck-moving', continue: true, volume: 0.18,
+              fadeOutAt: 20.0, fadeDurationMs: 4000 },
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 22.0, loop: true,  key: 'truck-idle', fadeInMs: 3000, volume: 0.12 },
+            { file: 'Audio/Truck_engine_idle.mp3',          at: 35.0, loop: true,  key: 'truck-idle',
+              fadeOutAt: 40.0, fadeDurationMs: 3000 }
+          ]
+        },
+
+        // ═══ Spread 13: pages 26–27 (wind, distant kaiju, THE END) ═══
+        13: {
+          sfx: [
+            { file: 'Audio/Wind_gust_sound_effect.mp3',     at: 6.0,  loop: false, volume: 0.4 },
+            { file: 'Audio/Distant_thunder.mp3',             at: 14.0, loop: false, volume: 0.25 }
+          ]
+        }
+      }
+    };
+    // SECTION 2: STATE
+    const state = {
+      phase: 'consent',
+      cameraReady: false,
+      faceMeshReady: false,
+      calibrationComplete: false,
+      bookOpen: false,
+      currentSpread: 0,
+      totalSpreads: 0,
+      inputLocked: false,
+      nodDetectorCallbacks: [],
+      debugVisible: false,
+      debugFaceVisible: false,
+      nod: { smoothedY: null, baselineY: null, lastNodTime: 0, frameCount: 0, lastFaceHeight: 0 },
+      // Gaze tracking state
+      gaze: {
+        ready: false,
+        smoothX: 0, smoothY: 0,
+        prevX: 0, prevY: 0,
+        dwellAccum: 0,
+        dwellTarget: null,    // 'forward' | 'back' | null
+        gapAccum: 0,
+        lastTurnTime: 0,
+        fallbackMode: false   // extended dwell if calibration was weak
+      }
+    };
+
+    // SECTION 3: AudioManager
+    const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+    const AudioManager = {
+      _cache: {},
+      _currentAmbient: null,
+      _ambientBaseVol: 0.25,
+      _ducked: false,
+      _ctx: null,
+
+      _getContext() {
+        if (!this._ctx) this._ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (this._ctx.state === 'suspended') this._ctx.resume();
+        return this._ctx;
+      },
+
+      async load(key, path) {
+        if (this._cache[key]) return this._cache[key];
+        const audio = new Audio();
+        audio.preload = 'auto';
+        try {
+          const resp = await fetch(path, { method: 'HEAD' });
+          if (resp.ok) {
+            audio.src = path;
+            debugLog('info', `Audio loaded: ${key} → ${path}`);
+          } else { throw new Error(`HTTP ${resp.status}`); }
+        } catch (e) {
+          audio.src = SILENT_WAV;
+          debugLog('warn', `Audio fallback (silent): ${key} — ${e.message}`);
+        }
+        this._cache[key] = audio;
+        return audio;
+      },
+
+      async play(key, { volume = 1.0, loop = false } = {}) {
+        const audio = this._cache[key];
+        if (!audio) { debugLog('warn', `Audio not loaded: ${key}`); return Promise.reject(new Error('not loaded')); }
+        audio.volume = volume;
+        audio.loop = loop;
+        audio.currentTime = 0;
+        try { await audio.play(); } catch (e) { debugLog('warn', `Audio play blocked: ${key} — ${e.message}`); }
+      },
+
+      stop(key) {
+        const audio = this._cache[key];
+        if (!audio) return;
+        audio.pause();
+        audio.currentTime = 0;
+      },
+
+      async fadeOut(key, durationMs = 500) {
+        const audio = this._cache[key];
+        if (!audio || audio.paused) return;
+        const steps = 20, stepMs = durationMs / steps, startVol = audio.volume;
+        for (let i = steps; i >= 0; i--) {
+          audio.volume = startVol * (i / steps);
+          await sleep(stepMs);
+        }
+        audio.pause(); audio.currentTime = 0;
+      },
+
+      async fadeIn(key, targetVol = 0.5, durationMs = 500) {
+        const audio = this._cache[key];
+        if (!audio) return;
+        audio.volume = 0; audio.loop = true; audio.currentTime = 0;
+        try { await audio.play(); } catch (e) { return; }
+        const steps = 20, stepMs = durationMs / steps;
+        for (let i = 1; i <= steps; i++) {
+          audio.volume = targetVol * (i / steps);
+          await sleep(stepMs);
+        }
+      },
+
+      async duckAmbient() {
+        if (this._ducked) return;
+        this._ducked = true;
+        const audio = this._cache[this._currentAmbient];
+        if (!audio || audio.paused) return;
+        const cfg = AUDIO_MANIFEST.ambient;
+        const steps = 15, stepMs = (cfg.duckMs || 800) / steps;
+        const startVol = audio.volume, target = cfg.duckTo || 0.08;
+        for (let i = steps; i >= 0; i--) {
+          audio.volume = target + (startVol - target) * (i / steps);
+          await sleep(stepMs);
+        }
+      },
+
+      async unduckAmbient() {
+        if (!this._ducked) return;
+        this._ducked = false;
+        const audio = this._cache[this._currentAmbient];
+        if (!audio || audio.paused) return;
+        const cfg = AUDIO_MANIFEST.ambient;
+        const steps = 15, stepMs = (cfg.duckMs || 800) / steps;
+        const startVol = audio.volume, target = this._ambientBaseVol;
+        for (let i = 1; i <= steps; i++) {
+          audio.volume = startVol + (target - startVol) * (i / steps);
+          await sleep(stepMs);
+        }
+      },
+
+      async crossfadeAmbient(newKey, fadeDurationMs = 1500, startTime = 0) {
+        const oldKey = this._currentAmbient;
+        if (oldKey === newKey) return;
+        if (oldKey && this._cache[oldKey]) {
+          const old = this._cache[oldKey];
+          const fadeSteps = 20, stepMs = fadeDurationMs / fadeSteps;
+          const startVol = old.volume;
+          for (let i = fadeSteps; i >= 0; i--) {
+            old.volume = startVol * (i / fadeSteps);
+            await sleep(stepMs);
+          }
+          old.pause(); old.currentTime = 0;
+        }
+        this._currentAmbient = newKey;
+        if (newKey && this._cache[newKey]) {
+          const nu = this._cache[newKey];
+          nu.volume = 0; nu.loop = true; nu.currentTime = startTime;
+          try { await nu.play(); } catch (e) { return; }
+          const fadeSteps = 20, stepMs = fadeDurationMs / fadeSteps;
+          const tv = this._ambientBaseVol;
+          for (let i = 1; i <= fadeSteps; i++) {
+            nu.volume = tv * (i / fadeSteps);
+            await sleep(stepMs);
+          }
+        }
+      },
+
+      async preloadAll() {
+        const loads = [];
+        // load ambient and thx if present
+        const amb = AUDIO_MANIFEST.ambient;
+        if (amb.world && amb.world.src) loads.push(this.load('ambient-world', amb.world.src));
+        if (amb.battle && amb.battle.src) loads.push(this.load('ambient-battle', amb.battle.src));
+        if (AUDIO_MANIFEST.thx && AUDIO_MANIFEST.thx.src) loads.push(this.load('thx-sting', AUDIO_MANIFEST.thx.src));
+        const seen = new Set();
+        for (const sp of Object.values(AUDIO_MANIFEST.spreads)) {
+          if (!sp.sfx) continue;
+          for (const e of sp.sfx) {
+            if (seen.has(e.file)) continue;
+            seen.add(e.file);
+            const k = 'sfx-' + e.file.replace(/[^a-zA-Z0-9]/g, '_');
+            loads.push(this.load(k, e.file));
+          }
+        }
+        await Promise.all(loads);
+        debugLog('info', 'Audio preload complete — ' + loads.length + ' files');
+      }
+    };
+
+    // SECTION 3b-pre: playThxAndWait helper — plays THX at full volume, blocks until ended
+    // CRITICAL: Must complete before book cover reveals. No skipping.
+    async function playThxAndWait() {
+      try {
+        if (!AudioManager._cache['thx-sting'] && AUDIO_MANIFEST.thx && AUDIO_MANIFEST.thx.src) {
+          debugLog('info', 'playThxAndWait: loading THX sting...');
+          await AudioManager.load('thx-sting', AUDIO_MANIFEST.thx.src);
+        }
+        if (AudioManager._cache['thx-sting']) {
+          const audio = AudioManager._cache['thx-sting'];
+          audio.volume = 1.0; /* FULL VOLUME */
+          audio.loop = false;
+          audio.currentTime = 0;
+          // Use actual duration if available, otherwise generous fallback
+          const fallbackMs = (audio.duration && isFinite(audio.duration))
+            ? (audio.duration * 1000) + 2000   // duration + 2s safety margin
+            : 20000;                             // 20s if duration unknown
+          debugLog('info', `playThxAndWait: THX playing at full volume (fallback: ${(fallbackMs/1000).toFixed(1)}s)`);
+          const pp = audio.play();
+          if (pp) await pp;
+          // Block until 'ended' event or fallback timeout
+          await new Promise((resolve) => {
+            const fb = setTimeout(() => { debugLog('warn', 'playThxAndWait: fallback timeout'); resolve(); }, fallbackMs);
+            audio.addEventListener('ended', () => { clearTimeout(fb); debugLog('info', 'playThxAndWait: THX ended naturally'); resolve(); }, { once: true });
+          });
+        } else {
+          debugLog('warn', 'playThxAndWait: THX not loaded — fallback wait');
+          await sleep(5000);
+        }
+      } catch (e) {
+        debugLog('warn', 'playThxAndWait error: ' + (e && e.message));
+        await sleep(3000);
+      }
+    }
+
+    // SECTION 3b: PageAudioController (guard + non-blocking play)
+    // ═══════════════════════════════════════════════════════════════
+    // AUTHOR MODE — when ?AUTHOR_MODE=true, sounds DON'T fire on schedule.
+    // Instead, user presses Space to fire each sound in order, recording
+    // the actual timestamp. At the end, console outputs new manifest timings.
+    // ═══════════════════════════════════════════════════════════════
+    const AuthorMode = {
+      enabled: (function() {
+        try {
+          var params = new URLSearchParams(window.location.search);
+          return params.get('AUTHOR_MODE') === 'true';
+        } catch (e) { return false; }
+      })(),
+      currentSpread: -1,
+      currentSpreadStartTime: 0,
+      pendingQueue: [],     /* sounds in this spread, in order */
+      nextIndex: 0,         /* index into pendingQueue */
+      recordedTimings: {},  /* spreadIdx → [{file, at, originalAt, volume, loop}] */
+
+      armSpread(spreadIndex, sfxList) {
+        // Skip "continue" entries (loops carrying over) — those auto-fire on spread start
+        const queue = sfxList.filter(e => !e.continue);
+        const autoEntries = sfxList.filter(e => e.continue);
+
+        this.currentSpread = spreadIndex;
+        this.currentSpreadStartTime = performance.now();
+        this.pendingQueue = queue;
+        this.nextIndex = 0;
+        this.recordedTimings[spreadIndex] = [];
+
+        debugLog('info', `═══ AUTHOR MODE: SPREAD ${spreadIndex} ARMED ═══`);
+        debugLog('info', `  Auto-firing ${autoEntries.length} continuing loop(s)`);
+        debugLog('info', `  ${queue.length} sound(s) queued — press SPACE to fire each in order:`);
+        for (let i = 0; i < queue.length; i++) {
+          const fname = queue[i].file.split('/').pop();
+          debugLog('info', `    [${i + 1}/${queue.length}] ${fname} (was at ${queue[i].at}s)`);
+        }
+
+        // Fire any "continue" loops immediately (these don't need authoring)
+        for (const entry of autoEntries) {
+          this._fireEntry(entry, true);
+        }
+      },
+
+      fireNext() {
+        if (this.currentSpread < 0) {
+          debugLog('warn', 'AUTHOR MODE: no spread armed yet');
+          return false;
+        }
+        if (this.nextIndex >= this.pendingQueue.length) {
+          debugLog('info', `AUTHOR MODE: all ${this.pendingQueue.length} sounds fired for spread ${this.currentSpread}. Nod to continue.`);
+          return false;
+        }
+        const entry = this.pendingQueue[this.nextIndex];
+        const elapsed = (performance.now() - this.currentSpreadStartTime) / 1000;
+        const fname = entry.file.split('/').pop();
+
+        debugLog('info', `► AUTHOR FIRE [${this.nextIndex + 1}/${this.pendingQueue.length}] "${fname}" at ${elapsed.toFixed(2)}s (was ${entry.at}s)`);
+
+        this.recordedTimings[this.currentSpread].push({
+          file: entry.file,
+          at: parseFloat(elapsed.toFixed(2)),
+          originalAt: entry.at,
+          volume: entry.volume,
+          loop: !!entry.loop,
+          key: entry.key,
+          fadeOutAt: entry.fadeOutAt,
+          fadeDurationMs: entry.fadeDurationMs
+        });
+
+        this._fireEntry(entry, false);
+        this.nextIndex++;
+        return true;
+      },
+
+      _fireEntry(entry, isContinue) {
+        const sfxKey = 'sfx-' + entry.file.replace(/[^a-zA-Z0-9]/g, '_');
+        if (isContinue && entry.key && PageAudioController._activeLoops[entry.key]) {
+          debugLog('info', `  AUTHOR: continuing loop "${entry.key}"`);
+          return;
+        }
+        if (entry.fadeInMs) {
+          AudioManager.fadeIn(sfxKey, entry.volume || 0.5, entry.fadeInMs).catch(()=>{});
+        } else {
+          AudioManager.play(sfxKey, { volume: entry.volume || 0.5, loop: !!entry.loop }).catch(()=>{});
+        }
+        if (entry.loop && entry.key) PageAudioController._activeLoops[entry.key] = sfxKey;
+      },
+
+      printSummary() {
+        debugLog('info', '');
+        debugLog('info', '═══════════════════════════════════════════');
+        debugLog('info', '  AUTHOR MODE — RECORDED TIMINGS SUMMARY');
+        debugLog('info', '═══════════════════════════════════════════');
+        debugLog('info', '');
+        debugLog('info', 'Copy-paste this back to Claude to update the manifest:');
+        debugLog('info', '');
+        const lines = ['```'];
+        const spreadKeys = Object.keys(this.recordedTimings).map(Number).sort((a,b)=>a-b);
+        for (const idx of spreadKeys) {
+          const entries = this.recordedTimings[idx];
+          if (!entries.length) continue;
+          lines.push(`SPREAD ${idx}:`);
+          for (const r of entries) {
+            const fname = r.file.split('/').pop();
+            const delta = (r.at - r.originalAt).toFixed(2);
+            const arrow = r.at > r.originalAt ? '+' : '';
+            lines.push(`  ${fname.padEnd(40, ' ')}  → ${r.at.toFixed(2)}s  (was ${r.originalAt}s, ${arrow}${delta}s)`);
+          }
+          lines.push('');
+        }
+        lines.push('```');
+        for (const ln of lines) {
+          console.log(ln);
+          debugLog('info', ln);
+        }
+        // Also stash on window for easy copy from console
+        window._BARDSTALE_AUTHOR_TIMINGS = this.recordedTimings;
+        debugLog('info', 'Full data also available at: window._BARDSTALE_AUTHOR_TIMINGS');
+      }
+    };
+
+    // SECTION 3b: PageAudioController (guard + non-blocking play)
+    const PageAudioController = {
+      _timers: [],
+      _activeLoops: {},
+
+      _spreadStartTime: 0,  /* ← timestamp when current spread started (for debug) */
+
+      startSpread(spreadIndex) {
+        const sm = AUDIO_MANIFEST.spreads[spreadIndex];
+        if (!sm || !sm.sfx) return;
+        this._spreadStartTime = performance.now();
+
+        // ═══ AUTHOR MODE: skip timer scheduling, arm manual triggers ═══
+        if (AuthorMode.enabled) {
+          AuthorMode.armSpread(spreadIndex, sm.sfx);
+          return;
+        }
+
+        debugLog('info', `PageAudio: scheduling ${sm.sfx.length} SFX for spread ${spreadIndex}`);
+        debugLog('info', `PageAudio: ──── SPREAD ${spreadIndex} SFX TIMELINE ────`);
+
+        for (const entry of sm.sfx) {
+          const sfxKey = 'sfx-' + entry.file.replace(/[^a-zA-Z0-9]/g, '_');
+          const absTime = (this._spreadStartTime / 1000).toFixed(1);
+          const fileName = entry.file.split('/').pop();
+          debugLog('info', `  → [${absTime}s+${entry.at}s] ${fileName} vol=${entry.volume || 0.5} loop=${!!entry.loop}${entry.continue ? ' (continue)' : ''}${entry.fadeOutAt ? ' fadeOut@'+entry.fadeOutAt+'s' : ''}`);
+
+          const t = setTimeout(() => {
+            // Guard: only play if this spread is still active
+            if (state.currentSpread !== spreadIndex) {
+              debugLog('info', `Skipping SFX for spread ${spreadIndex} — not active`);
+              return;
+            }
+
+            const nowAbs = ((performance.now() - this._spreadStartTime) / 1000).toFixed(2);
+            debugLog('info', `PageAudio: ▶ PLAYING "${fileName}" at spread+${nowAbs}s (spread ${spreadIndex})`);
+
+            if (entry.continue && entry.key && this._activeLoops[entry.key]) {
+              debugLog('info', `PageAudio: continuing loop "${entry.key}"`);
+              return;
+            }
+
+            // Non-blocking: call fadeIn/play but do not await here
+            if (entry.fadeInMs) {
+              AudioManager.fadeIn(sfxKey, entry.volume || 0.5, entry.fadeInMs).catch(e => {
+                debugLog('warn', `fadeIn failed for ${sfxKey}: ${e && e.message}`);
+              });
+            } else {
+              AudioManager.play(sfxKey, { volume: entry.volume || 0.5, loop: !!entry.loop }).catch(e => {
+                debugLog('warn', `play failed for ${sfxKey}: ${e && e.message}`);
+              });
+            }
+
+            if (entry.loop && entry.key) this._activeLoops[entry.key] = sfxKey;
+
+            if (entry.fadeOutAt !== undefined) {
+              const fd = setTimeout(() => {
+                debugLog('info', `PageAudio: ⏏ FADE-OUT "${fileName}" (spread ${spreadIndex})`);
+                AudioManager.fadeOut(sfxKey, entry.fadeDurationMs || 1000);
+                if (entry.key) delete this._activeLoops[entry.key];
+              }, Math.max(0, (entry.fadeOutAt - (entry.at || 0)) * 1000));
+              this._timers.push(fd);
+            }
+          }, Math.max(0, (entry.at || 0) * 1000));
+
+          this._timers.push(t);
+        }
+      },
+
+      stopSpread(nextSpreadIndex) {
+        for (const t of this._timers) clearTimeout(t);
+        this._timers = [];
+        const nm = AUDIO_MANIFEST.spreads[nextSpreadIndex];
+        const keep = new Set();
+        if (nm && nm.sfx) nm.sfx.forEach(e => { if (e.continue && e.key) keep.add(e.key); });
+        for (const [key, sfxKey] of Object.entries(this._activeLoops)) {
+          if (!keep.has(key)) {
+            AudioManager.fadeOut(sfxKey, 300);
+            delete this._activeLoops[key];
+          }
+        }
+      },
+
+      stopAll() {
+        for (const t of this._timers) clearTimeout(t);
+        this._timers = [];
+        for (const [key, sfxKey] of Object.entries(this._activeLoops)) AudioManager.stop(sfxKey);
+        this._activeLoops = {};
+      },
+
+      checkAmbientTransition(spreadIndex) {
+        const cfg = AUDIO_MANIFEST.ambient;
+        if (!cfg.transitionAtSpread) return;
+        if (spreadIndex === cfg.transitionAtSpread) {
+          const delayMs = (cfg.transitionAtTime || 0) * 1000;
+          debugLog('info', `PageAudio: Take Five crossfade scheduled for +${(delayMs/1000).toFixed(1)}s into spread ${spreadIndex}`);
+          const transitionTimer = setTimeout(() => {
+            // Guard: only trigger if we're still on the right spread
+            if (state.currentSpread !== spreadIndex) {
+              debugLog('info', `PageAudio: Take Five transition skipped — already moved past spread ${spreadIndex}`);
+              return;
+            }
+            debugLog('info', `PageAudio: ▶ ambient → battle (Take Five) NOW at spread ${spreadIndex}`);
+            AudioManager._ambientBaseVol = cfg.battle.volume || 0.30;
+            AudioManager.crossfadeAmbient('ambient-battle', cfg.crossfadeMs || 3000, cfg.battle.startAt || 0);
+          }, delayMs);
+          this._timers.push(transitionTimer);
+        }
+        // Spread 12: Take Five fades out — cooldown begins, story winding down
+        if (spreadIndex === 12) {
+          debugLog('info', `PageAudio: Take Five fading out at spread ${spreadIndex} (cooldown)`);
+          AudioManager._ambientBaseVol = 0.08;
+          AudioManager.fadeOut('ambient-battle', 8000).catch(()=>{});
+        }
+        // Spread 13: Ensure silence — final pages, wind and distant thunder only
+        if (spreadIndex === 13) {
+          debugLog('info', `PageAudio: ambient silence at spread ${spreadIndex} (final)`);
+          AudioManager.crossfadeAmbient(null, 3000).catch(()=>{});
+        }
+      }
+    };
+
+    // SECTION 4: Story data (trimmed)
+    const storyData = {
+      title: 'Lone Cub and Old Wolf',
+      author: 'Mickey W.',
+      acknowledgement: 'This is for my Dad.',
+      pages: [
+        { text: 'This is for my Dad.', ambient: 'ambient-default', sfx: null, isAcknowledgement: true },
+        { text: 'This is for my friends and family.', ambient: null, sfx: null, isAcknowledgement: true },
+        { text: "He stepped away from the truck to give himself a moment and relieve himself.\n\nThe engine idled behind him, a low, steady rumble that vibrated through the soles of his boots. He kept one hand on the door as he relieved himself, eyes on the horizon out of habit more than fear. Old habits were hard to kill. Some of them were the only things that had survived.\n\nThe sun was sinking low, spilling gold across the valley. Light caught on broken stone and twisted metal, softening their edges, turning ruin into something almost gentle. Wind moved through the tall, dry grass in slow waves, and for a heartbeat it looked like water again. Like the world remembered what it had once been.\n\nHe hadn\u2019t meant to stop and look. That was the dangerous part. Looking.", ambient: 'ambient-default', sfx: null },
+        { text: "His gaze drifted lower, following the slope of the land down into the valley below.\n\nAt first, he thought the ground itself was moving.\n\nThen he saw the legs.\n\nA dung beetle \u2014 vast beyond reason \u2014 pushed its burden through the valley with slow, unstoppable patience. Its shell was a patchwork of chitin and metal, plates fused and bolted together over time. Pistons and cables moved with the rhythm of muscle, not replacing it, but reinforcing it.\n\nThe ball it rolled was enormous. A compacted mass of scrap and wreckage, crushed vehicles and twisted beams pressed together into a sphere the size of a mall. It groaned softly as it turned, metal grinding against metal, the sound carrying up the valley like distant thunder.\n\nThe beetle leaned into it, every step deliberate. Ancient instinct, scaled up to meet a world that had left too much behind.\n\nThe sunset painted the creature and its burden in copper and fire. For a moment, it was beautiful. Not in spite of what it was, but because of it.\n\nLife, doing what it had always done.\n\nA sharp cry cut through the air behind him.", ambient: null, sfx: null },
+        { text: "He turned.\n\nThe truck door stood wide open.\n\nFor a split second, his mind refused to accept it. He looked inside \u2014 empty seats, loose straps swaying gently, the engine still idling like nothing was wrong.\n\n\u201cDad?\u201d he called, already moving.\n\nHe rounded the front of the truck and saw him across the road, wandering into a field of tall cactus, half\u2011dressed and barefoot, the cat darting frantically between his legs. The animal cried again, sharp and insistent, throwing itself into his path, trying to stop him.\n\n\u201cHey! Hey\u2014!\u201d The words tore out of him as he ran.\n\nThe cactus tore back.\n\nSpines bit into his calves and thighs as he pushed through, swearing, stumbling, pain flaring bright and immediate. The cat weaved past him, circling the old man, brushing against his legs, refusing to leave his side.\n\n\u201cDad, stop!\u201d he shouted, reaching for him.", ambient: null, sfx: null },
+        { text: "Above them, metal clanged softly.\n\nThe girl sat astride the roof of the truck, legs hooked around the rack as she adjusted the satellite dish. A tablet rested against her knee, lines of data scrolling as she fine\u2011tuned the connection. She tapped once, then again \u2014 and smiled as the signal locked in.\n\nShe glanced back toward the shouting, watching the man chase his father through the cactus field.\n\nThen she looked down the road.\n\nIt stretched straight and empty into the distance, heat shimmering above the cracked asphalt. Something far off caught the light \u2014 a brief glint of metal. A thin smear of smoke rose beyond it, dark against the sky.\n\nHer smile faded.", ambient: null, sfx: null },
+        { text: "He caught up to his father just as the old man reached out again.\n\n\u201cDad\u2014don\u2019t,\u201d he said, grabbing his wrist.\n\nThe cactus loomed over them, thick and ribbed, its skin a dull green broken by scars where spines had snapped and regrown. Pale flowers bloomed along its crown \u2014 small, waxy things with bruised\u2011purple centers. Rare. Valuable. Dangerous.\n\nThe old man smiled at them like they were treasures.\n\n\u201cSee?\u201d he said softly, fingers trembling as they brushed the air just short of the spines. \u201cThey\u2019re still here.\u201d\n\nThe flowers only bloomed for a few days each year, fed by heat and neglect. People used to risk a lot for them \u2014 ground them down, brewed them into visions strong enough to drown memory or sharpen it to a blade. Some said they let you see the world the way it used to be. Others said they showed you what was coming.\n\nMost never came back the same.", ambient: null, sfx: null },
+        { text: "The cat pressed itself against the old man\u2019s leg, tail flicking, eyes fixed on his hands.\n\n\u201cDad,\u201d he said again, firmer now. \u201cWe can\u2019t.\u201d\n\nThe old man frowned, confused, then winced as a spine finally found skin. He hissed in pain, pulling back, the moment breaking like glass.\n\nAbove them, something chimed softly.", ambient: null, sfx: null },
+        { text: "The chime came again, sharper this time.\n\nThe girl\u2019s fingers moved quickly across the tablet as she swung the long\u2011range camera toward the road. The image snapped into focus \u2014 heat distortion peeling away to reveal movement beneath it.\n\nVehicles.\n\nFast.\n\nToo fast.\n\nShe zoomed in, jaw tightening as the shapes resolved \u2014 armored frames, mismatched plating, weapons mounted where headlights used to be. Dust and smoke trailed behind them like a wake.\n\nBandits.\n\nShe looked down at the others, already opening her mouth to shout.\n\nThe device around her neck vibrated instead.\n\nA voice slipped into the space between them \u2014 calm, familiar, and completely out of place.\n\n\u201cI believe this is the part where someone says, \u2018They\u2019re coming in hot.\u2019\u201d", ambient: null, sfx: null },
+        { text: "The girl froze.\n\nThe voice continued, almost cheerful.\n\n\u201cMultiple hostile vehicles. High speed. Aggressive posture.\u201d\n\u201cEstimated time to contact: under one minute.\u201d\n\nBelow her, the cat bristled.\n\nThe road no longer felt empty.", ambient: null, sfx: null },
+        { text: "He didn\u2019t argue with his father this time.\n\nHe just scooped him up.\n\nThe old man laughed in surprise, arms flailing for a second before settling, light as he\u2019d ever been. The cat leapt clear, then immediately returned, pacing beneath them as he carried his father back toward the truck.\n\n\u201cI\u2019ve got you,\u201d he muttered, more to himself than anyone else.\n\nMetal clanged as the girl slid down the ladder into her station, boots hitting the floor hard. She shoved aside empty bottles and crushed wrappers, clearing space with one sweeping motion.\n\n\u201cHey,\u201d the voice chimed mildly. \u201cYou know, if you cleaned once in a while\u2014\u201d\n\nShe groaned. \u201cLater.\u201d", ambient: null, sfx: null },
+        { text: "Her fingers danced across the controls. The road appeared on one screen, the valley on another. A third bloomed into a schematic \u2014 their position, the approaching vehicles, red markers closing fast.\n\n\u201cDefensive systems online,\u201d the voice announced.\n\u201cWindow plating deploying.\u201d\n\u201cTargeting arrays active.\u201d\n\nOutside, armored plates slid down over the truck\u2019s windows with a heavy, final sound. Hidden mounts shifted beneath the hull, weapons tracking silently toward the road.\n\nHe buckled his father into the seat, hands shaking just a little. The cat jumped up, settling into the old man\u2019s lap like it had always belonged there.\n\nHe slipped the headset over his father\u2019s ears.\n\n\u201cStart Take Five,\u201d he said.\n\nA soft drum beat filled the cab \u2014 barely there at first, gentle and familiar. The old man\u2019s shoulders relaxed, his eyes drifting, the world narrowing to rhythm and memory.\n\n\u201cProcedure initiated,\u201d the voice replied. \u201cGood choice.\u201d\n\nOutside, engines roared closer.\n\nThe music grew louder.", ambient: null, sfx: null },
+        { text: "The shutters slid fully into place.\n\nSlatted armor sealed the cab windows, the outside world breaking into narrow bands of motion and shadow. The sound changed \u2014 deeper now, more contained.\n\n\u201cCab shutters closed.\u201d\n\nThe truck took a hit of uneven ground and didn\u2019t flinch. The steering fought him for a moment, then settled. He adjusted without thinking, hands steady, jaw tight.\n\nThe scout car broke formation.\n\nIt surged ahead of the others, low and fast, cutting wide to test their speed. The motorcycles followed, splitting into pairs, engines screaming as they fanned out.\n\nThe girl\u2019s fingers danced.\n\n\u201cTracking multiple vectors.\u201d\n\u201cRemote station active.\u201d\n\u201cTracking only.\u201d\n\nSomething unfolded above them \u2014 not dramatic, not loud. Just a shift in weight, a quiet mechanical readiness.", ambient: null, sfx: null },
+        { text: "The heavy truck in the rear convoy slowed.\n\nToo slow.\n\n\u201cHeavy weapons platform aligning.\u201d\n\nThe warning came a heartbeat before the flash.\n\nThe shot cracked past them, tearing through dust and air, close enough to feel. The truck shuddered as debris rattled against the hull.\n\nThe girl didn\u2019t blink.\n\nHer screen flared.\n\n\u201cCountermeasure deployed.\u201d\n\nThe world outside warped \u2014 dust kicked up in a sudden wall, the shot\u2019s follow\u2011through thrown wide. The second round went nowhere near them.\n\nA pause.\n\n\u201cEffectiveness\u2026\u201d\n\u201c\u2026inconclusive.\u201d\n\nThe scout car hesitated.\n\nJust for a second.\n\nIt was enough.", ambient: null, sfx: null },
+        { text: "The truck held.\n\nThe engine roared, heat climbing, fuel ticking down faster now. He felt it through the wheel, through the seat, through his bones. The truck wasn\u2019t fast \u2014 but it was relentless.\n\nThe bandits adjusted.\n\nThe motorcycles pulled back, regrouping. The scout car dropped to the side, no longer probing. The heavy truck slowed again, repositioning.\n\nThey weren\u2019t panicking.\n\nThey were thinking.\n\nThe girl finished her drink and crushed the empty pouch in her fist. She slid it back into the drawer without looking.\n\nThe device at her throat pulsed once more.\n\n\u201cThey\u2019re reassessing.\u201d", ambient: null, sfx: null },
+        { text: "The music swelled slightly in the cab, the saxophone threading through the noise. The old man\u2019s head lolled gently with the motion, eyes closed, breathing slow. The cat stayed curled in his lap, unbothered.\n\nThe road stretched ahead.\n\nThe truck kept running.\n\nAnd behind them, the bandits decided this wasn\u2019t going to be easy.", ambient: null, sfx: null },
+        { text: "The road ended in fire.\n\nBurned\u2011out cars lay piled across the asphalt, twisted frames fused together, blackened shells stacked nose to nose like a barricade built from old mistakes. The truck bore down on it fast, suspension tightening as the headlights washed over scorched metal and shattered glass.\n\nHe saw it instantly.\n\nNo time to brake. No room to turn.\n\n\u201cOff road,\u201d he said.\n\nThe wheel jerked hard as he committed, the truck leaving the pavement in a roar of dust and stone. The ground dropped unevenly beneath them, the suspension screaming as the weight shifted, tires chewing into dirt and scrub.", ambient: null, sfx: null },
+        { text: "Behind them, the motorcycles surged.\n\nTwo broke formation, engines screaming as they closed the gap, riders leaning low, passengers clinging tight. They came in fast and reckless, skimming the truck\u2019s flanks, close enough that he could feel the vibration through the cab.\n\nThe girl\u2019s screen flared.\n\n\u201cClose\u2011range threat.\u201d\n\nSomething pulsed beneath the hull.\n\nOne of the passengers vanished.\n\nNot exploded. Not torn apart. Just gone \u2014 thrown sideways in a violent blur as the bike swerved hard, rider fighting to stay upright before peeling away, dragging chaos back toward the rest of the pack.\n\nThe second bike didn\u2019t slow.\n\nThe passenger leapt.", ambient: null, sfx: null },
+        { text: "Boots hit metal with a hollow clang as the bandit slammed onto the truck\u2019s side, fingers finding purchase, body hauling upward with feral determination. The truck bucked over broken ground, but the bandit held on, climbing fast.\n\nThe scout car broke right, cutting toward the dirt road, angling to box them in.\n\n\u201cPriority target,\u201d the voice said.\n\nThe remote station rotated.\n\nOnce.\n\nThe shot was clean.\n\nThe scout car shattered in a bloom of dust and flame, flipping end over end before disappearing into the scrub. The sound hit a second later, a deep, final crack that echoed across the open ground.\n\nThe bandit reached the roof.", ambient: null, sfx: null },
+        { text: "Metal rang as fists and boots slammed down onto the turret housing. The blows were wild, furious, relentless. Something snapped. Something jammed.\n\n\u201cRemote station offline.\u201d\n\nThe truck lurched again.\n\nAbove them, the bandit found the trapdoor.\n\nIt wasn\u2019t locked.\n\nThe latch gave way with a sharp metallic click, and the hatch flew open, sunlight pouring into the cab in a blinding shaft. A face appeared in the opening \u2014 eyes wide, teeth bared, skin streaked with dust and sweat.\n\nDeranged. Exultant.\n\nThe girl didn\u2019t scream.\n\nThe AI did.\n\nA sharp, panicked sound tore through the cab, raw and wrong.", ambient: null, sfx: null },
+        { text: "\u201cDrive,\u201d he said. \u201cBoth of you.\u201d\n\nHe unbuckled in one smooth motion, rising from the seat as the truck thundered over uneven ground. His hand disappeared beneath his jacket and came back with a heavy pistol, black and familiar, drawn from a holster no one had ever seen.\n\nThe bandit dropped.\n\nBoots hit the floor hard as the figure lunged forward, a snarl tearing free as it charged.\n\nHe raised the pistol.\n\nA shot rang out.", ambient: null, sfx: null },
+        { text: "The bandit didn\u2019t stop moving until the girl forced him to.\n\nShe crossed the cab in two steps, shoved the protagonist back into the seat, and slammed the belt home with a practiced yank. Blood soaked through his jacket, dark and spreading, but she didn\u2019t hesitate. She tore fabric, pressed hard, wrapped tight.\n\n\u201cStay,\u201d she said. Not to him. To the moment.\n\nThe AI spoke over her shoulder, voice strained and sharp.\n\n\u201cMultiple hostiles closing. Boarding imminent.\u201d\n\n\u201cBrake on my mark,\u201d she said. \u201cHard.\u201d\n\nHer hand closed around the pistol he\u2019d dropped. It felt heavier than she expected.", ambient: null, sfx: null },
+        { text: "The truck lurched as she climbed back to her station, fingers flying. The road narrowed ahead, dirt packed thin and uneven, scrub clawing at the sides. Behind them, the bandit truck surged closer, figures clinging to its frame, shouting, reaching.\n\n\u201cDistance closing,\u201d the AI warned.\n\n\u201cNow.\u201d\n\nThe brakes slammed.\n\nThe truck shuddered violently, weight shifting forward as the pursuing vehicle plowed into the one behind it. Metal screamed. Bodies flew. The impact tore the formation apart in a chaos of dust and wreckage.\n\nOne bandit made it to the roof anyway.\n\nThe trapdoor burst open again, light flooding the cab as the figure dropped through.\n\nThe girl didn\u2019t scream.\n\nShe raised the pistol and fired.\n\nThe body fell back out of sight, the hatch slamming shut behind it.", ambient: null, sfx: null },
+        { text: "For a heartbeat, everything went quiet.\n\nThen the cameras caught movement.\n\nNot vehicles.\n\nToo fast.\n\nThe AI hesitated \u2014 just long enough to matter.\n\n\u201cUnidentified biological mass,\u201d it said. \u201cMultiple.\u201d\n\nThe dust parted.\n\nSomething low and fast streaked across the ground, fur matted, teeth flashing. A bandit hanging from the wrecked truck vanished in a blur, dragged screaming into the scrub. Another shape slammed into the side of the vehicle, claws scraping metal before peeling away, uninterested.\n\nThe remaining truck stopped firing.\n\nFigures scattered.\n\nThe mice didn\u2019t chase the truck.\n\nThey didn\u2019t care.\n\nThey harvested what had fallen.", ambient: null, sfx: null },
+        { text: "Inside the cab, the girl locked the hatch and pushed the throttle forward. The truck surged down the narrow road, suspension screaming, engine burning hot.\n\nThe cameras watched as the dust settled behind them.\n\nWatched the movement fade.\n\nWatched the wasteland reclaim what lingered.\n\nThe road stretched ahead.\n\nThe truck kept going.", ambient: null, sfx: null },
+        { text: "The truck didn\u2019t slow until the road widened and the ground firmed beneath the tires.\n\nBy then, the engine was running hot, the suspension whining with every correction. The girl eased off the throttle only when the AI told her the cameras showed nothing but dust and distance behind them.\n\n\u201cNo pursuit detected.\u201d\n\nShe didn\u2019t answer. She just kept driving.\n\nThe protagonist sagged in his seat, breath shallow, eyes unfocused. The makeshift bandage was soaked through, her hands slick with blood she refused to look at for too long.\n\n\u201cStay with me,\u201d she said, pressing harder. \u201cYou don\u2019t get to stop now.\u201d\n\nThe AI lowered the music without being asked.", ambient: null, sfx: null },
+        { text: "The father hummed softly, off\u2011key, fingers tapping against the cat\u2019s fur. He didn\u2019t notice the blood. He didn\u2019t notice the damage. He was somewhere else, following a melody only he could hear.\n\nThe truck finally rolled to a stop beneath the shadow of a broken overpass, concrete ribs jutting out like the bones of something long dead. The engine idled, then cut.\n\nSilence rushed in.\n\nThe girl sat back on her heels, chest heaving. Her hands shook now that there was nothing left to do. She stared at the pistol in her lap for a long moment before setting it down carefully, like it might bite her.", ambient: null, sfx: null },
+        { text: "\u201cStructural damage noted,\u201d the AI said, quieter now. \u201cRemote station nonfunctional. Fuel reserves critical. Medical intervention required.\u201d\n\nShe nodded, even though it couldn\u2019t see her.\n\nOutside, the wind moved through the scrub. Somewhere far off, something large shifted its weight, the sound carrying faintly across the open land.\n\nThe world hadn\u2019t changed.\n\nIt was still out there. Still watching. Still hungry.\n\nInside the cab, the girl leaned her forehead against the console and closed her eyes for just a second.\n\nThen she straightened, wiped her hands on her pants, and reached for the medical kit.\n\nThey weren\u2019t safe.\n\nBut they were alive.\n\nAnd for now, the truck could still move.", ambient: null, sfx: null }
+      ]
+    };
+
+    // SECTION 5: DOM refs
+    const dom = {
+      ritualOverlay: document.getElementById('ritual-overlay'),
+      consentScreen: document.getElementById('consent-screen'),
+      consentBtn: document.getElementById('consent-begin-btn'),
+      ritualSequence: document.getElementById('ritual-sequence'),
+      ritualPhaseLabel: document.getElementById('ritual-phase-label'),
+      ritualSublabel: document.getElementById('ritual-sublabel'),
+      ritualDots: Array.from(document.querySelectorAll('.ritual-dot')),
+
+      calOverlay: document.getElementById('calibration-overlay'),
+      calInstruction: document.getElementById('cal-instruction'),
+      calPhaseLabel: document.getElementById('cal-phase-label'),
+      calNarrative: document.getElementById('cal-narrative'),
+      calProgress: document.getElementById('cal-progress'),
+      calDots: Array.from(document.querySelectorAll('.cal-dot')),
+
+      bookContainer: document.getElementById('book-container'),
+      bookCover: document.getElementById('book-cover'),
+      bookCoverTitle: document.getElementById('book-cover-title'),
+      bookCoverAuthor: document.getElementById('book-cover-author'),
+      bookSpread: document.getElementById('book-spread'),
+      pageLeftContent: document.getElementById('page-left-content'),
+      pageRightContent: document.getElementById('page-right-content'),
+      pageLeft: document.getElementById('page-left'),
+      pageRight: document.getElementById('page-right'),
+      pageNumLeft: document.getElementById('page-number-left'),
+      pageNumRight: document.getElementById('page-number-right'),
+      readingProgress: document.getElementById('reading-progress'),
+
+      endCeremony: document.getElementById('end-ceremony'),
+      endReturnBtn: document.getElementById('end-return-btn'),
+
+      nodIndicator: document.getElementById('nod-indicator'),
+
+      // Gaze tracking DOM refs
+      gazeIndicator: document.getElementById('gaze-indicator'),
+      gazeCursor: document.getElementById('gaze-cursor'),
+      gazeDwellRing: document.getElementById('gaze-dwell-ring'),
+      gazeHotspotFwd: document.getElementById('gaze-hotspot-forward'),
+      gazeHotspotBack: document.getElementById('gaze-hotspot-back'),
+      gazeHotspotCenter: document.getElementById('gaze-hotspot-center'),
+      pageTurnTarget: document.getElementById('page-turn-target'),
+
+      debugToggle: document.getElementById('debug-toggle'),
+      debugPanel: document.getElementById('debug-panel'),
+      debugCanvas: document.getElementById('debug-face-canvas'),
+      cameraVideo: document.getElementById('camera-video')
+    };
+
+    // SECTION 6: utilities
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+    function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+
+    const MAX_DEBUG_LINES = 200; let debugLineCount = 0;
+    function debugLog(level, msg) {
+      const ts = new Date().toLocaleTimeString('en-US', { hour12:false, fractionalSecondDigits:2 });
+      const line = document.createElement('div');
+      line.className = `debug-line ${level}`;
+      line.textContent = `[${ts}] [${level.toUpperCase()}] ${msg}`;
+      dom.debugPanel.appendChild(line);
+      debugLineCount++;
+      while (debugLineCount > MAX_DEBUG_LINES) { dom.debugPanel.removeChild(dom.debugPanel.firstChild); debugLineCount--; }
+      dom.debugPanel.scrollTop = dom.debugPanel.scrollHeight;
+      const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+      consoleFn(`[NodReader] [${level}] ${msg}`);
+    }
+
+    // SECTION 7: duplicate id checker
+    function checkDuplicateIds() {
+      const all = document.querySelectorAll('[id]');
+      const seen = {}; const dupes = [];
+      all.forEach(el => { if (seen[el.id]) dupes.push(el.id); else seen[el.id] = true; });
+      if (dupes.length > 0) debugLog('error', `DUPLICATE IDs FOUND: ${dupes.join(', ')}`); else debugLog('info', `ID check passed — ${all.length} unique IDs`);
+      return dupes;
+    }
+
+    // SECTION 8: FaceMesh
+    let faceMesh = null, mediapipeCamera = null;
+    async function initFaceMesh() {
+      debugLog('info', 'Initializing FaceMesh...');
+      try {
+        faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}` });
+        faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.5, minTrackingConfidence:0.5 });
+        faceMesh.onResults(onFaceMeshResults);
+        const stream = await navigator.mediaDevices.getUserMedia({ video:{ width:640, height:480, facingMode:'user' } });
+        dom.cameraVideo.srcObject = stream;
+        await dom.cameraVideo.play();
+        state.cameraReady = true;
+        dom.nodIndicator.classList.add('camera-active');
+        debugLog('info', 'Camera stream active');
+        mediapipeCamera = new Camera(dom.cameraVideo, {
+          onFrame: async () => { if (faceMesh) await faceMesh.send({ image: dom.cameraVideo }); },
+          width:640, height:480
+        });
+        mediapipeCamera.start();
+        state.faceMeshReady = true;
+        debugLog('info', 'FaceMesh running — landmarks streaming');
+      } catch (err) {
+        debugLog('error', `FaceMesh init failed: ${err.message}`);
+        debugLog('warn', 'Falling back to Space-only input');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 8b: GazeTracker — WebGazer.js eye-tracking layer
+    // Provides gaze-based page turning via dwell detection.
+    // All processing in-browser. No frames leave the client.
+    // ═══════════════════════════════════════════════════════════════
+    const GazeTracker = {
+      _active: false,
+      _rafId: null,
+
+      async init() {
+        if (!GAZE_CONFIG.ENABLED) {
+          debugLog('info', '[GazeTracker] Disabled via GAZE_CONFIG.ENABLED');
+          return;
+        }
+
+        if (typeof webgazer === 'undefined') {
+          debugLog('warn', '[GazeTracker] WebGazer.js not loaded — gaze tracking unavailable');
+          return;
+        }
+
+        try {
+          debugLog('info', '[GazeTracker] Initializing WebGazer.js...');
+
+          // ═══════════════════════════════════════════════════════════
+          // FIX [2026-04-25]: Disable mouse-based training that was
+          // causing gaze cursor to follow mouse instead of eyes.
+          // Per Copilot's bug report. AGGRESSIVE MULTI-METHOD VERSION.
+          // ═══════════════════════════════════════════════════════════
+
+          // 1. Belt: clear any saved mouse-trained model
+          try {
+            localStorage.removeItem('webgazerGlobalData');
+            localStorage.removeItem('webgazerGlobalSettings');
+            debugLog('info', '[GazeTracker] Cleared cached webgazerGlobalData');
+          } catch (e) {
+            debugLog('warn', '[GazeTracker] Could not clear localStorage: ' + e.message);
+          }
+
+          // 2. Suspenders: disable all storing flags BEFORE begin()
+          webgazer.params.storingPoints = false;
+          webgazer.params.storePoints = false;
+          webgazer.params.saveDataAcrossSessions = false;
+          webgazer.params.moveTickSize = 0;
+          if (webgazer.params.dataTimestep !== undefined) {
+            webgazer.params.dataTimestep = 0;
+          }
+
+          // 3. Try every known method to remove mouse listeners
+          //    NOTE: Do NOT call pause() or stopRecording() — those stop gaze
+          //    tracking entirely. We only want mouse listeners removed.
+          const removeMouseMethods = [
+            'removeMouseEventListeners',
+            'detachMouseListeners'
+          ];
+          removeMouseMethods.forEach(m => {
+            if (typeof webgazer[m] === 'function') {
+              try { webgazer[m](); debugLog('info', `[GazeTracker] Called webgazer.${m}()`); }
+              catch (e) { debugLog('warn', `[GazeTracker] webgazer.${m}() failed: ${e.message}`); }
+            }
+          });
+
+          // 4. Hide all default WebGazer UI
+          webgazer.params.showVideoPreview = false;
+          webgazer.params.showFaceOverlay = false;
+          webgazer.params.showFaceFeedbackBox = false;
+          webgazer.params.showGazeDot = false;
+
+          // 5. Force ridge regression (eye-only)
+          webgazer.setRegression('ridge');
+
+          // 6. Set gaze listener — fires ~30Hz with {x, y} in viewport pixels
+          let _gazeEventCount = 0;
+          webgazer.setGazeListener((data, elapsedTime) => {
+            if (!this._active) return;
+            _gazeEventCount++;
+            // Log first event and then every 100th to confirm gaze is flowing
+            if (_gazeEventCount === 1) {
+              debugLog('info', `[GazeTracker] FIRST gaze event received! data=${JSON.stringify(data)}`);
+            } else if (_gazeEventCount % 100 === 0) {
+              debugLog('info', `[GazeTracker] ${_gazeEventCount} gaze events received. Latest: x=${data ? data.x.toFixed(0) : 'null'}, y=${data ? data.y.toFixed(0) : 'null'}`);
+            }
+            if (!data) return;
+            this._onGazeData(data.x, data.y);
+          });
+
+          // Begin tracking
+          await webgazer.begin();
+
+          // 7. Belt-and-suspenders: remove mouse listeners AGAIN after begin()
+          removeMouseMethods.forEach(m => {
+            if (typeof webgazer[m] === 'function') {
+              try { webgazer[m](); } catch (e) {}
+            }
+          });
+
+          // 8. Watchdog: keep removing mouse listeners every 2s in case
+          //    WebGazer re-attaches them. Cheap and effective.
+          this._mouseListenerWatchdog = setInterval(() => {
+            if (typeof webgazer.removeMouseEventListeners === 'function') {
+              try { webgazer.removeMouseEventListeners(); } catch (e) {}
+            }
+          }, 2000);
+
+          // 9. Brute-force option: override addEventListener on document
+          //    so WebGazer can't add new mouse listeners. (No-op safety net.)
+          // NOTE: Not implementing this — too invasive. Watchdog should suffice.
+
+          // Force-hide any WebGazer-injected elements
+          ['webgazerVideoFeed', 'webgazerVideoCanvas', 'webgazerFaceOverlay',
+           'webgazerFaceFeedbackBox', 'webgazerGazeDot'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+          });
+
+          this._active = true;
+          state.gaze.ready = true;
+          dom.gazeIndicator.classList.add('gaze-active');
+
+          if (GAZE_CONFIG.CURSOR_VISIBLE) {
+            dom.gazeCursor.classList.add('active');
+            // Start cursor at center of viewport so it's visible immediately
+            dom.gazeCursor.style.left = (window.innerWidth / 2) + 'px';
+            dom.gazeCursor.style.top = (window.innerHeight / 2) + 'px';
+            debugLog('info', '[GazeTracker] Gaze cursor active — gold dot should be visible');
+          }
+
+          debugLog('info', '[GazeTracker] WebGazer active — gaze tracking online (eye-only mode)');
+          debugLog('info', `[GazeTracker] Dwell: ${GAZE_CONFIG.DWELL_MS}ms (visual only — page turns DISABLED)`);
+          debugLog('info', '[GazeTracker] DESIGN: Nods are ONLY page-turn gesture during demo phase');
+
+        } catch (err) {
+          debugLog('error', `[GazeTracker] WebGazer init failed: ${err.message}`);
+          debugLog('warn', '[GazeTracker] Gaze page-turning unavailable — nod/space still work');
+        }
+      },
+
+      _onGazeData(rawX, rawY) {
+        if (!this._active || !state.gaze.ready) return;
+        if (rawX == null || rawY == null || isNaN(rawX) || isNaN(rawY)) return;
+
+        const g = state.gaze;
+        const alpha = GAZE_CONFIG.SMOOTHING_ALPHA;
+
+        // Exponential smoothing
+        g.smoothX = alpha * rawX + (1 - alpha) * g.smoothX;
+        g.smoothY = alpha * rawY + (1 - alpha) * g.smoothY;
+
+        // Saccade filter — ignore fast eye jumps
+        const dx = g.smoothX - g.prevX;
+        const dy = g.smoothY - g.prevY;
+        const speed = Math.sqrt(dx * dx + dy * dy);
+        g.prevX = g.smoothX;
+        g.prevY = g.smoothY;
+
+        if (speed > GAZE_CONFIG.SACCADE_THRESHOLD) {
+          return; // discard saccade frame
+        }
+
+        // Update cursor position
+        if (GAZE_CONFIG.CURSOR_VISIBLE && dom.gazeCursor) {
+          dom.gazeCursor.style.left = g.smoothX + 'px';
+          dom.gazeCursor.style.top = g.smoothY + 'px';
+        }
+
+        // Only process dwell during reading phase
+        if (state.phase !== 'reading' || state.inputLocked) {
+          g.dwellAccum = 0;
+          g.dwellTarget = null;
+          return;
+        }
+
+        // Cooldown check
+        const now = performance.now();
+        if (now - g.lastTurnTime < GAZE_CONFIG.COOLDOWN_MS) return;
+
+        // Check which hotspot the gaze is in
+        const hitTarget = this._hitTest(g.smoothX, g.smoothY);
+
+        if (hitTarget) {
+          if (hitTarget === g.dwellTarget) {
+            // Same target — accumulate dwell
+            g.dwellAccum += 33; // ~30Hz
+            g.gapAccum = 0;
+          } else {
+            // New target — reset
+            g.dwellTarget = hitTarget;
+            g.dwellAccum = 33;
+            g.gapAccum = 0;
+          }
+
+          // Update visual feedback
+          dom.gazeCursor.classList.add('dwelling');
+          dom.gazeIndicator.classList.add('gaze-dwelling');
+
+          // Light up page-turn target when looking at forward hotspot
+          if (hitTarget === 'forward' && dom.pageTurnTarget) {
+            dom.pageTurnTarget.classList.add('gaze-near');
+            dom.pageTurnTarget.classList.toggle('gaze-dwelling', g.dwellAccum > 400);
+          }
+
+          // Update dwell ring progress
+          const dwellNeeded = g.fallbackMode ? GAZE_CONFIG.DWELL_FALLBACK_MS : GAZE_CONFIG.DWELL_MS;
+          const progress = clamp(g.dwellAccum / dwellNeeded, 0, 1);
+          this._updateDwellRing(g.smoothX, g.smoothY, progress);
+
+          // Check if dwell threshold met
+          if (g.dwellAccum >= dwellNeeded) {
+            g.lastTurnTime = now;
+            g.dwellAccum = 0;
+            g.dwellTarget = null;
+            this._clearDwellVisuals();
+
+            // ═══════════════════════════════════════════════════════════
+            // DESIGN DECISION [2026-04-25]: Gaze-based page turning is
+            // DISABLED for demo phase. Nods are the ONLY page-turn gesture.
+            // Gaze cursor + dwell visuals remain active for testing/feedback.
+            // Re-enable only after directional gaze tracking is stable.
+            // ═══════════════════════════════════════════════════════════
+            debugLog('info', `[GazeTracker] Gaze dwell observed: ${hitTarget} — page turn NOT triggered (demo phase: nod-only)`);
+
+            // INTENTIONALLY DISABLED — do not call handleNodAction() from gaze.
+            // if (hitTarget === 'forward') {
+            //   handleNodAction();
+            // } else if (hitTarget === 'back') {
+            //   debugLog('info', '[GazeTracker] Back dwell detected — not yet implemented');
+            // }
+          }
+        } else {
+          // Not on any hotspot — accumulate gap
+          g.gapAccum += 33;
+          if (g.gapAccum > GAZE_CONFIG.MICRO_BREAK_MS) {
+            // Micro-break exceeded — reset dwell
+            g.dwellAccum = 0;
+            g.dwellTarget = null;
+            this._clearDwellVisuals();
+          }
+        }
+      },
+
+      _hitTest(x, y) {
+        // Test if gaze point is within a hotspot's bounding rect
+        if (!dom.bookSpread.classList.contains('active')) return null;
+
+        const fwdRect = dom.gazeHotspotFwd.getBoundingClientRect();
+        if (x >= fwdRect.left && x <= fwdRect.right && y >= fwdRect.top && y <= fwdRect.bottom) {
+          return 'forward';
+        }
+
+        const backRect = dom.gazeHotspotBack.getBoundingClientRect();
+        if (x >= backRect.left && x <= backRect.right && y >= backRect.top && y <= backRect.bottom) {
+          return 'back';
+        }
+
+        return null;
+      },
+
+      _updateDwellRing(x, y, progress) {
+        dom.gazeDwellRing.classList.add('active');
+        dom.gazeDwellRing.style.left = x + 'px';
+        dom.gazeDwellRing.style.top = y + 'px';
+        const circle = dom.gazeDwellRing.querySelector('circle');
+        if (circle) {
+          // stroke-dashoffset: 113 = empty, 0 = full circle
+          circle.style.strokeDashoffset = (113 * (1 - progress)).toString();
+        }
+      },
+
+      _clearDwellVisuals() {
+        dom.gazeCursor.classList.remove('dwelling');
+        dom.gazeIndicator.classList.remove('gaze-dwelling');
+        dom.gazeDwellRing.classList.remove('active');
+        if (dom.pageTurnTarget) {
+          dom.pageTurnTarget.classList.remove('gaze-near', 'gaze-dwelling');
+        }
+        const circle = dom.gazeDwellRing.querySelector('circle');
+        if (circle) circle.style.strokeDashoffset = '113';
+      },
+
+      shutdown() {
+        this._active = false;
+        state.gaze.ready = false;
+        if (this._mouseListenerWatchdog) {
+          clearInterval(this._mouseListenerWatchdog);
+          this._mouseListenerWatchdog = null;
+        }
+        if (typeof webgazer !== 'undefined') {
+          try { webgazer.end(); } catch (e) {}
+        }
+        dom.gazeIndicator.classList.remove('gaze-active', 'gaze-dwelling');
+        dom.gazeCursor.classList.remove('active');
+        dom.gazeDwellRing.classList.remove('active');
+        debugLog('info', '[GazeTracker] Shut down.');
+      },
+
+      toggleCursor() {
+        GAZE_CONFIG.CURSOR_VISIBLE = !GAZE_CONFIG.CURSOR_VISIBLE;
+        dom.gazeCursor.classList.toggle('active', GAZE_CONFIG.CURSOR_VISIBLE);
+        debugLog('info', `[GazeTracker] Cursor ${GAZE_CONFIG.CURSOR_VISIBLE ? 'shown' : 'hidden'}`);
+      },
+
+      /**
+       * Feed WebGazer a training point — eye-only, no mouse involvement.
+       * Call this repeatedly while user is looking at known coordinates.
+       * @param {number} x - viewport X (pixels)
+       * @param {number} y - viewport Y (pixels)
+       */
+      recordTrainingPoint(x, y) {
+        if (typeof webgazer === 'undefined' || !this._active) return false;
+        if (typeof webgazer.recordScreenPosition !== 'function') {
+          debugLog('warn', '[GazeTracker] recordScreenPosition not available on this WebGazer version');
+          return false;
+        }
+        try {
+          // Wrap in try/catch — webgazer can throw if the regression model is mid-update
+          webgazer.recordScreenPosition(x, y, 'click');
+          return true;
+        } catch (e) {
+          // Don't log every failure — there may be many during a calibration burst
+          return false;
+        }
+      },
+
+      /**
+       * Pause/resume the mouse-listener watchdog.
+       * Call pauseWatchdog() before feeding training points so the watchdog
+       * doesn't strip out listeners mid-training and confuse WebGazer.
+       */
+      pauseWatchdog() {
+        if (this._mouseListenerWatchdog) {
+          clearInterval(this._mouseListenerWatchdog);
+          this._mouseListenerWatchdog = null;
+          debugLog('info', '[GazeTracker] Watchdog paused');
+        }
+      },
+
+      resumeWatchdog() {
+        if (!this._mouseListenerWatchdog && this._active) {
+          this._mouseListenerWatchdog = setInterval(() => {
+            if (typeof webgazer.removeMouseEventListeners === 'function') {
+              try { webgazer.removeMouseEventListeners(); } catch (e) {}
+            }
+          }, 2000);
+          debugLog('info', '[GazeTracker] Watchdog resumed');
+        }
+      }
+    };
+
+    // SECTION 9: Nod detector
+    function onFaceMeshResults(results) {
+      state.nod.frameCount++;
+      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        if (state.debugFaceVisible) clearDebugCanvas();
+        return;
+      }
+      const landmarks = results.multiFaceLandmarks[0];
+      const noseTip = landmarks[1], forehead = landmarks[10], chin = landmarks[152];
+      const faceHeight = Math.abs(forehead.y - chin.y);
+      state.nod.lastFaceHeight = faceHeight;
+      const rawY = noseTip.y;
+      if (state.nod.smoothedY === null) { state.nod.smoothedY = rawY; state.nod.baselineY = rawY; return; }
+      const prevSmoothed = state.nod.smoothedY;
+      state.nod.smoothedY = prevSmoothed * (1 - NOD_CONFIG.SMOOTHING) + rawY * NOD_CONFIG.SMOOTHING;
+      if (state.nod.smoothedY < state.nod.baselineY) state.nod.baselineY = state.nod.smoothedY;
+      else state.nod.baselineY += (state.nod.smoothedY - state.nod.baselineY) * 0.015;
+      const displacement = state.nod.smoothedY - state.nod.baselineY;
+      const normalizedDisp = (faceHeight > 0.01) ? displacement / (faceHeight * NOD_CONFIG.DISTANCE_SCALE) : 0;
+      const now = performance.now();
+      const cooldownOk = (now - state.nod.lastNodTime) > NOD_CONFIG.COOLDOWN_MS;
+      if (normalizedDisp > NOD_CONFIG.BASE_THRESHOLD && cooldownOk) {
+        state.nod.lastNodTime = now;
+        state.nod.baselineY = state.nod.smoothedY;
+        onNodDetected();
+      }
+      if (state.nod.frameCount % 30 === 0) {
+        debugLog('info', `Nod: disp=${normalizedDisp.toFixed(4)} thresh=${NOD_CONFIG.BASE_THRESHOLD} faceH=${faceHeight.toFixed(3)} smooth=${state.nod.smoothedY.toFixed(4)} base=${state.nod.baselineY.toFixed(4)}`);
+      }
+      if (state.debugFaceVisible) drawDebugFace(landmarks);
+    }
+
+    function onNodDetected() {
+      debugLog('nod', `NOD DETECTED (phase: ${state.phase})`);
+      dom.nodIndicator.classList.add('nod-flash');
+      setTimeout(() => dom.nodIndicator.classList.remove('nod-flash'), 300);
+      state.nodDetectorCallbacks.forEach(cb => { try { cb(); } catch (e) { debugLog('error', `Nod callback error: ${e.message}`); } });
+      handleNodAction();
+    }
+
+    function registerNodDetector(callback) {
+      if (typeof callback !== 'function') { debugLog('error', 'registerNodDetector: callback must be a function'); return () => {}; }
+      state.nodDetectorCallbacks.push(callback);
+      debugLog('info', `Nod detector callback registered (total: ${state.nodDetectorCallbacks.length})`);
+      return () => { state.nodDetectorCallbacks = state.nodDetectorCallbacks.filter(cb => cb !== callback); debugLog('info', 'Nod detector callback unregistered'); };
+    }
+    window.registerNodDetector = registerNodDetector;
+
+    // SECTION 10: handleNodAction
+    function handleNodAction() {
+      if (state.inputLocked) { debugLog('info', 'Input locked — ignoring action'); return; }
+      switch (state.phase) {
+        case 'consent': break;
+        case 'ritual': break;
+        case 'calibration': break;
+        case 'cover': openBook(); break;
+        case 'reading': turnPage(); break;
+        case 'end': returnToCover(); break;
+        default: debugLog('warn', `Unknown phase: ${state.phase}`);
+      }
+    }
+    window.handleNodAction = handleNodAction;
+
+    // SECTION 11: Calibration
+    // 5-point calibration — comfort-first sequence (visual ritual, not actual training).
+    // [2026-04-25] WebGazer training removed since eye tracking is deferred. Dots advance on a timer.
+    // 9-point CAL_POSITIONS are kept for future re-enable but only first 5 are used.
+    const CAL_POSITIONS = [
+      { label:'Center',       xPct:50, yPct:50, narrative:'Finding center\u2026' },
+      { label:'Top-left',     xPct:15, yPct:20, narrative:'Tracing the edges of your gaze\u2026' },
+      { label:'Top-right',    xPct:85, yPct:20, narrative:'Mapping the far shore\u2026' },
+      { label:'Bottom-right', xPct:85, yPct:80, narrative:'Almost there\u2026' },
+      { label:'Bottom-left',  xPct:15, yPct:80, narrative:'Completing the circle\u2026' }
+    ];
+
+    async function runCalibration() {
+      state.phase = 'calibration';
+      debugLog('info', 'Calibration starting — 5-point comfort sequence');
+
+      dom.calOverlay.classList.add('active');
+      dom.calPhaseLabel.textContent = 'CALIBRATION';
+      dom.calInstruction.textContent = 'Look at each dot as it appears.\nTake your time — there\'s no rush.';
+      dom.calNarrative.textContent = '';
+      dom.calNarrative.classList.remove('visible');
+
+      await sleep(1200);
+
+      for (let i = 0; i < CAL_POSITIONS.length; i++) {
+        const pos = CAL_POSITIONS[i];
+        const dot = dom.calDots[i];
+        if (!dot) continue;
+
+        dot.style.left = `calc(${pos.xPct}% - 38px)`;
+        dot.style.top = `calc(${pos.yPct}% - 38px)`;
+        dot.classList.add('active');
+        dom.calProgress.textContent = `${i + 1} of ${CAL_POSITIONS.length}`;
+        dom.calNarrative.textContent = pos.narrative;
+        dom.calNarrative.classList.add('visible');
+        debugLog('info', `Calibration dot ${i + 1}: ${pos.label} — "${pos.narrative}"`);
+
+        await sleep(RITUAL_CONFIG.CAL_DOT_DWELL_MS);
+
+        dot.classList.remove('active');
+        dot.classList.add('locked');
+        dom.calNarrative.classList.remove('visible');
+        await sleep(RITUAL_CONFIG.CAL_DOT_PAUSE_MS);
+      }
+
+      dom.calNarrative.textContent = 'Your presence is known. The pages await.';
+      dom.calNarrative.classList.add('visible');
+      dom.calInstruction.textContent = '';
+      dom.calProgress.textContent = '';
+      dom.calOverlay.classList.add('complete-glow');
+      debugLog('info', 'Calibration complete');
+      state.calibrationComplete = true;
+
+      await playThxAndWait();
+
+      dom.calNarrative.classList.remove('visible');
+      dom.calOverlay.classList.remove('active');
+      dom.calOverlay.classList.remove('complete-glow');
+
+      showCover();
+    }
+
+    // SECTION 12: Ritual sequencer (visual only for demo)
+    async function runRitualSequence() {
+      state.phase = 'ritual';
+      debugLog('info', 'Ritual sequence starting');
+
+      dom.consentScreen.style.display = 'none';
+      dom.ritualSequence.style.display = 'flex';
+
+      // Visual-only phases for demo (no theme blocking)
+      await ritualPhase('\u2726 Awakening \u2726', 'The space breathes in\u2026', RITUAL_CONFIG.CHIME_DURATION_MS, 0);
+      await sleep(RITUAL_CONFIG.PHASE_GAP_MS);
+
+      await ritualPhase('\u27d0 Presence \u27d0', 'You are seen. You are here.', RITUAL_CONFIG.THX_DURATION_MS, 1);
+      await sleep(RITUAL_CONFIG.PHASE_GAP_MS);
+
+      await ritualPhase('\u2014 The Threshold Opens \u2014', 'Step through.', RITUAL_CONFIG.INTRO_DURATION_MS, 2);
+      await sleep(RITUAL_CONFIG.PHASE_GAP_MS);
+
+      dom.ritualOverlay.classList.add('fade-out');
+      await sleep(1200);
+      dom.ritualOverlay.classList.add('hidden');
+
+      debugLog('info', 'Ritual sequence complete → calibration');
+
+      await runCalibration();
+    }
+
+    async function ritualPhase(label, sublabel, durationMs, dotIndex) {
+      debugLog('info', `Ritual phase: ${label}`);
+      dom.ritualPhaseLabel.textContent = label; dom.ritualPhaseLabel.classList.add('visible');
+      dom.ritualSublabel.textContent = sublabel; dom.ritualSublabel.classList.add('visible');
+
+      // Visual-only: do not play ceremony theme here for demo
+
+      await sleep(durationMs);
+
+      if (dotIndex >= 0 && dotIndex < dom.ritualDots.length) dom.ritualDots[dotIndex].classList.add('lit');
+
+      dom.ritualPhaseLabel.classList.remove('visible');
+      dom.ritualSublabel.classList.remove('visible');
+      await sleep(400);
+    }
+
+    // SECTION 13: Book manager
+    function showCover() {
+      state.phase = 'cover';
+      debugLog('info', 'Showing book cover');
+      dom.bookCoverTitle.textContent = storyData.title || 'Untitled';
+      dom.bookCoverAuthor.textContent = storyData.author ? `by ${storyData.author}` : '';
+      dom.bookContainer.classList.add('active');
+      dom.bookCover.classList.remove('hidden');
+      dom.bookSpread.classList.remove('active');
+      dom.endCeremony.classList.remove('active');
+
+      state.inputLocked = true;
+      setTimeout(() => { state.inputLocked = false; debugLog('info', 'Cover ready — nod or Space to open'); }, RITUAL_CONFIG.COVER_LINGER_MS);
+    }
+
+    function openBook() {
+      if (state.bookOpen) return;
+      state.bookOpen = true;
+      state.phase = 'reading';
+      state.currentSpread = 0;
+      state.totalSpreads = Math.ceil(storyData.pages.length / BOOK_CONFIG.PAGES_PER_SPREAD);
+
+      debugLog('info', `Book opened — ${storyData.pages.length} pages, ${state.totalSpreads} spreads`);
+
+      dom.bookCover.classList.add('hidden');
+      dom.bookSpread.classList.add('active');
+
+      // Start world ambient (non-blocking)
+      const ambCfg = AUDIO_MANIFEST.ambient;
+      if (ambCfg.world && ambCfg.world.src) {
+        AudioManager._ambientBaseVol = ambCfg.world.volume || 0.25;
+        AudioManager.crossfadeAmbient('ambient-world', 2000).catch(() => {});
+      }
+
+      // Do NOT play a ceremony theme for the demo (theme removed)
+
+      renderSpread(0);
+    }
+
+    function renderSpread(spreadIndex) {
+      const leftIdx = spreadIndex * BOOK_CONFIG.PAGES_PER_SPREAD;
+      const rightIdx = leftIdx + 1;
+      const leftPage = storyData.pages[leftIdx];
+      const rightPage = storyData.pages[rightIdx];
+
+      if (leftPage) {
+        if (leftPage.isAcknowledgement) {
+          dom.pageLeftContent.innerHTML = '<div style="text-align:center; padding-top:40%; font-style:italic; color:#8a8577; font-size:1.1rem; line-height:1.8;">' + leftPage.text + '</div>';
+        } else if (leftPage.isBlank) {
+          dom.pageLeftContent.textContent = '';
+        } else {
+          dom.pageLeftContent.textContent = leftPage.text;
+        }
+        dom.pageNumLeft.textContent = leftPage.isAcknowledgement || leftPage.isBlank ? '' : (leftIdx + 1);
+      } else {
+        dom.pageLeftContent.textContent = ''; dom.pageNumLeft.textContent = '';
+      }
+
+      if (rightPage) {
+        if (rightPage.isAcknowledgement) {
+          dom.pageRightContent.innerHTML = '<div style="text-align:center; padding-top:40%; font-style:italic; color:#8a8577; font-size:1.1rem; line-height:1.8;">' + rightPage.text + '</div>';
+        } else if (rightPage.isBlank) {
+          dom.pageRightContent.textContent = '';
+        } else {
+          dom.pageRightContent.textContent = rightPage.text;
+        }
+        dom.pageNumRight.textContent = rightPage.isAcknowledgement || rightPage.isBlank ? '' : (rightIdx + 1);
+      } else {
+        dom.pageRightContent.textContent = ''; dom.pageNumRight.textContent = '';
+      }
+
+      // Reset scroll to top so reader sees the start of the new pages
+      try { dom.pageLeft.scrollTop = 0; dom.pageRight.scrollTop = 0; } catch (e) {}
+
+      updateReadingProgress();
+
+      // Schedule SFX (spread-based) and check ambient transition
+      PageAudioController.startSpread(spreadIndex);
+      PageAudioController.checkAmbientTransition(spreadIndex);
+
+      debugLog('info', `Rendered spread ${spreadIndex + 1}/${state.totalSpreads} (pages ${leftIdx + 1}–${rightIdx + 1})`);
+    }
+
+    function updateReadingProgress() {
+      if (state.totalSpreads <= 0) return;
+      const pct = ((state.currentSpread + 1) / state.totalSpreads) * 100;
+      dom.readingProgress.style.width = pct + '%';
+    }
+
+    // SECTION 14: Page turn controller
+    async function turnPage() {
+      if (state.phase !== 'reading') return;
+      if (state.inputLocked) return;
+
+      const nextSpread = state.currentSpread + 1;
+      if (nextSpread >= state.totalSpreads) { showEndCeremony(); return; }
+
+      state.inputLocked = true;
+
+      PageAudioController.stopSpread(nextSpread);
+
+      dom.pageLeft.classList.add('turning'); dom.pageRight.classList.add('turning');
+      await sleep(400);
+      dom.pageLeft.classList.remove('turning'); dom.pageRight.classList.remove('turning');
+
+      state.currentSpread = nextSpread;
+      renderSpread(nextSpread);
+
+      setTimeout(() => { state.inputLocked = false; }, 200);
+    }
+
+    // SECTION 14b: End ceremony & return
+    async function showEndCeremony() {
+      state.phase = 'end';
+      debugLog('info', 'End of book — showing end ceremony');
+
+      // Author mode: dump the recorded timings now
+      if (AuthorMode.enabled) {
+        AuthorMode.printSummary();
+      }
+      PageAudioController.stopAll();
+      AudioManager.crossfadeAmbient(null, 2000).catch(()=>{});
+      GazeTracker._clearDwellVisuals();
+
+      dom.bookSpread.classList.remove('active');
+      dom.endCeremony.classList.add('active');
+
+      document.body.classList.add('end-fade');
+
+      state.inputLocked = true;
+      setTimeout(() => { state.inputLocked = false; debugLog('info', 'End ceremony ready — nod or click to return'); }, 2000);
+    }
+
+    function returnToCover() {
+      debugLog('info', 'Returning to cover from end ceremony');
+      document.body.classList.remove('end-fade');
+      dom.endCeremony.classList.remove('active');
+      state.bookOpen = false; state.currentSpread = 0; dom.readingProgress.style.width = '0%';
+      showCover();
+    }
+
+    // SECTION 15: Debug utilities
+    function toggleDebugPanel() { state.debugVisible = !state.debugVisible; dom.debugPanel.classList.toggle('active', state.debugVisible); debugLog('info', `Debug panel ${state.debugVisible ? 'shown' : 'hidden'}`); }
+    function toggleDebugFace() { state.debugFaceVisible = !state.debugFaceVisible; dom.debugCanvas.classList.toggle('active', state.debugFaceVisible); debugLog('info', `Face overlay ${state.debugFaceVisible ? 'shown' : 'hidden'}`); }
+
+    function drawDebugFace(landmarks) {
+      const ctx = dom.debugCanvas.getContext('2d'); const w = dom.debugCanvas.width; const h = dom.debugCanvas.height;
+      ctx.clearRect(0,0,w,h);
+      const keyLandmarks = [1,10,152,33,263,61,291];
+      ctx.fillStyle = '#8f8';
+      for (const idx of keyLandmarks) {
+        const lm = landmarks[idx];
+        ctx.beginPath(); ctx.arc(lm.x * w, lm.y * h, 3, 0, Math.PI * 2); ctx.fill();
+      }
+      const nose = landmarks[1];
+      const disp = state.nod.smoothedY !== null ? (state.nod.smoothedY - state.nod.baselineY) : 0;
+      const fh = state.nod.lastFaceHeight || 0.3;
+      const normDisp = fh > 0.01 ? disp / (fh * NOD_CONFIG.DISTANCE_SCALE) : 0;
+      const proximity = clamp(normDisp / NOD_CONFIG.BASE_THRESHOLD, 0, 1);
+      const r = Math.round(100 + 155 * proximity);
+      const g = Math.round(255 - 155 * proximity);
+      ctx.fillStyle = `rgb(${r}, ${g}, 100)`;
+      ctx.beginPath(); ctx.arc(nose.x * w, nose.y * h, 6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function clearDebugCanvas() { const ctx = dom.debugCanvas.getContext('2d'); ctx.clearRect(0,0,dom.debugCanvas.width, dom.debugCanvas.height); }
+
+    function logBookState() {
+      debugLog('info', `Book state: phase=${state.phase} open=${state.bookOpen} spread=${state.currentSpread + 1}/${state.totalSpreads} inputLocked=${state.inputLocked} camera=${state.cameraReady} faceMesh=${state.faceMeshReady} cal=${state.calibrationComplete}`);
+    }
+
+    // SECTION 16: Event listeners
+    dom.consentBtn.addEventListener('click', async function onConsent() {
+      dom.consentBtn.disabled = true; dom.consentBtn.textContent = 'Starting\u2026';
+      debugLog('info', 'User consented — initializing');
+
+      await AudioManager.preloadAll();
+
+      await initFaceMesh();
+
+      // Initialize WebGazer eye-tracking (runs alongside MediaPipe)
+      await GazeTracker.init();
+
+      await runRitualSequence();
+    }, { once: true });
+
+    document.addEventListener('keydown', function onKeydown(e) {
+      if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        if (state.phase === 'consent' && !dom.consentBtn.disabled) { dom.consentBtn.click(); return; }
+        // ═══ AUTHOR MODE: Space fires next sound, doesn't turn pages ═══
+        if (AuthorMode.enabled && state.phase === 'reading') {
+          AuthorMode.fireNext();
+          return;
+        }
+        debugLog('nod', 'SPACE pressed — triggering handleNodAction');
+        handleNodAction();
+      }
+      if (e.code === 'KeyD' && !e.repeat) { toggleDebugPanel(); }
+      if (e.code === 'KeyF' && !e.repeat && e.shiftKey) { toggleDebugFace(); }
+      if (e.code === 'KeyG' && !e.repeat) { GazeTracker.toggleCursor(); }
+      if (e.code === 'KeyB' && !e.repeat) { logBookState(); }
+      // Author mode: P key prints summary at any time
+      if (e.code === 'KeyP' && !e.repeat && AuthorMode.enabled) {
+        AuthorMode.printSummary();
+      }
+    });
+
+    dom.debugToggle.addEventListener('click', toggleDebugPanel);
+
+    dom.bookCover.addEventListener('click', function onCoverClick() {
+      if (state.phase === 'cover' && !state.inputLocked) openBook();
+    });
+
+    dom.endReturnBtn.addEventListener('click', function onEndReturn() {
+      if (state.phase === 'end' && !state.inputLocked) returnToCover();
+    });
+
+    // SECTION 17: init
+    function init() {
+      debugLog('info', '═══ Lone Cub and Old Wolf — Nod Reader ═══');
+      if (AuthorMode.enabled) {
+        debugLog('info', '✦ AUTHOR MODE ACTIVE — Space fires next sound, Nod turns pages, P prints summary, summary auto-prints at end of book ✦');
+      }
+      debugLog('info', `Nod config: threshold=${NOD_CONFIG.BASE_THRESHOLD} scale=${NOD_CONFIG.DISTANCE_SCALE} cooldown=${NOD_CONFIG.COOLDOWN_MS}ms smooth=${NOD_CONFIG.SMOOTHING}`);
+      debugLog('info', `Gaze config: dwell=${GAZE_CONFIG.DWELL_MS}ms cooldown=${GAZE_CONFIG.COOLDOWN_MS}ms smooth=${GAZE_CONFIG.SMOOTHING_ALPHA} enabled=${GAZE_CONFIG.ENABLED}`);
+      debugLog('info', `Story: "${storyData.title}" by ${storyData.author} — ${storyData.pages.length} pages`);
+
+      checkDuplicateIds();
+
+      if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        debugLog('warn', 'WARNING: Not on HTTPS or localhost — camera access may fail');
+        const sub = document.getElementById('consent-subtitle');
+        if (sub) sub.innerHTML += '<br><br><strong style="color:#f88">⚠ Not on HTTPS — camera may not work</strong>';
+      }
+
+      debugLog('info', 'Waiting for user consent to begin...');
+      debugLog('info', 'Keyboard: Space=action, D=debug, Shift+F=face overlay, G=gaze cursor, B=book state');
+    }
+
+    // Cleanup on page unload — release camera and gaze tracker
+    window.addEventListener('beforeunload', () => {
+      GazeTracker.shutdown();
+    });
+
+    init();
+
+  })();
+  </script>
+</body>
+</html>

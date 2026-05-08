@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>FaceMesh Nodding Debug Scaffold</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body{height:100%;margin:0;background:#000;color:#f5f5f5;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial}
+  #root{display:flex;gap:18px;padding:18px;box-sizing:border-box;height:100vh}
+  #controlPanel{width:320px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border-radius:12px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,0.6)}
+  #controlPanel h2{margin:0 0 10px 0;font-size:14px;text-transform:uppercase}
+  .control-row{display:flex;align-items:center;gap:8px;margin:10px 0}
+  .control-row label{flex:1;font-size:12px;color:#dcdcdc}
+  .control-row input[type=range]{flex:1}
+  .val{font-weight:700;color:#fff}
+  .toggle-row{display:flex;align-items:center;gap:8px;margin:8px 0}
+  #stage{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
+  #calibrationCanvas{width:480px;height:480px;border-radius:50%;background:radial-gradient(circle at center,#070707 0%,#000 70%);border:1px solid rgba(255,255,255,0.03)}
+  #video{position:absolute;top:16px;right:16px;width:240px;height:180px;border-radius:8px;z-index:10}
+  #debugOverlay{position:absolute;left:12px;bottom:12px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.6);font-size:12px;white-space:pre;z-index:11}
+  #startCalibrationBtnPanel{width:100%;padding:10px;border-radius:8px;background:#0b6cff;color:#fff;border:0;cursor:pointer;font-weight:700;margin-bottom:10px}
+  #hintBox{position:absolute;right:16px;bottom:16px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.75);color:#ffd;font-size:12px;z-index:12;display:none}
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="controlPanel" aria-label="Calibration controls">
+    <h2>Calibration Controls</h2>
+    <button id="startCalibrationBtnPanel" type="button">Start Calibration</button>
+
+    <div class="control-row">
+      <label for="presetSelect">Preset</label>
+      <select id="presetSelect"><option value="conservative">Conservative</option><option value="balanced" selected>Balanced</option><option value="sensitive">Sensitive</option></select>
+    </div>
+
+    <div class="control-row">
+      <label for="baseThresholdRange">Base Threshold</label>
+      <input id="baseThresholdRange" type="range" min="0.02" max="0.20" step="0.01" value="0.06">
+      <div class="val" id="baseThresholdVal">0.06</div>
+    </div>
+
+    <div class="control-row">
+      <label for="distanceScaleRange">Distance Scale</label>
+      <input id="distanceScaleRange" type="range" min="0.0" max="1.2" step="0.05" value="0.6">
+      <div class="val" id="distanceScaleVal">0.60</div>
+    </div>
+
+    <div class="control-row">
+      <label for="cooldownRange">Cooldown ms</label>
+      <input id="cooldownRange" type="range" min="400" max="2000" step="100" value="1200">
+      <div class="val" id="cooldownVal">1200</div>
+    </div>
+
+    <div class="control-row">
+      <label for="smoothingRange">Smoothing</label>
+      <input id="smoothingRange" type="range" min="0.10" max="0.40" step="0.01" value="0.25">
+      <div class="val" id="smoothingVal">0.25</div>
+    </div>
+
+    <div class="control-row">
+      <label for="targetRadiusRange">Target radius px</label>
+      <input id="targetRadiusRange" type="range" min="12" max="80" step="2" value="36">
+      <div class="val" id="targetRadiusVal">36</div>
+    </div>
+
+    <div class="toggle-row"><input id="enableNodLogging" type="checkbox"><label for="enableNodLogging">Enable nod logging</label></div>
+    <div class="toggle-row"><input id="enableLandmarkLogging" type="checkbox"><label for="enableLandmarkLogging">Enable landmark logging</label></div>
+
+    <div class="control-row">
+      <button id="applyPresetBtn">Apply Preset</button>
+      <button id="centerTargetBtn">Center Target</button>
+    </div>
+
+    <div class="control-row">
+      <button id="saveBaselineBtn">Save Baseline (console)</button>
+      <button id="resetBtn">Reset Defaults</button>
+    </div>
+
+    <div style="font-size:11px;color:#bfbfbf;margin-top:8px">Adaptive threshold <span id="adaptiveDisplay">n/a</span></div>
+    <div id="controlStatus" style="font-size:12px;color:#cfcfcf;margin-top:8px;white-space:pre-line">Phase: IDLE
+Nod armed: false
+Gaze→target d: n/a</div>
+  </div>
+
+  <div id="stage">
+    <canvas id="calibrationCanvas" width="480" height="480" aria-label="Calibration canvas"></canvas>
+    <video id="video" autoplay muted playsinline></video>
+    <div id="debugOverlay"></div>
+    <div id="hintBox" role="status"></div>
+  </div>
+</div>
+
+<!-- MediaPipe FaceMesh -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+
+<script>
+/* FaceMesh nod debug scaffold
+   - Exposes runtime knobs in window for quick integration
+   - Use Save Baseline to print JSON of current numeric settings
+*/
+
+const pages = ["DEBUG PAGE 1 — calibration only","DEBUG PAGE 2 — calibration only"];
+const Phase = { IDLE:"IDLE", ARRIVE:"ARRIVE", SETTLE:"SETTLE", HOLD:"HOLD", TITLE:"TITLE", ACK:"ACK", READ:"READ" };
+window.phase = Phase.IDLE;
+
+let calibrationActive=false, arriveStartTime=null, settleStartTime=null, holdStartTime=null;
+const ARRIVE_MS=1200, SETTLE_MS=1200, HOLD_MS=4000;
+window.currentPageIndex=0;
+
+let rawDot={x:0.5,y:0.5,visible:false}, gazeDot={x:0.5,y:0.5,visible:false}, readDot={x:0.5,y:0.5,visible:false};
+
+// runtime knobs
+window.SMOOTHING = 0.25;
+window.NOD_BASE_THRESHOLD = 0.06;
+window.NOD_DISTANCE_SCALE = 0.6;
+window.NOD_COOLDOWN_MS = 1200;
+window.TARGET_RADIUS_PX = 36;
+window.DISTANCE_COLOR_THRESHOLDS = { close:0.06, mid:0.14 };
+
+window.ENABLE_NOD_LOGGING = false;
+window.ENABLE_LANDMARK_LOGGING = false;
+
+window.nodArmed = false;
+window.lastNodTime = 0;
+window.lastNoseY = null;
+
+const canvas = document.getElementById('calibrationCanvas'), ctx = canvas.getContext('2d');
+const videoEl = document.getElementById('video'), debugOverlay = document.getElementById('debugOverlay'), hintBox = document.getElementById('hintBox');
+
+const faceMesh = new FaceMesh({ locateFile: (file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
+faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
+faceMesh.onResults(onResults);
+
+let camera=null;
+async function initCamera(){
+  try{
+    camera = new Camera(videoEl, { onFrame: async ()=>{ await faceMesh.send({ image: videoEl }); }, width:640, height:480 });
+    await camera.start();
+    console.log('camera ready');
+    showHint('info','Camera ready. Use Start Calibration to begin.');
+  }catch(err){ console.error('camera init failed',err); showHint('error','Camera failed to start.'); }
+}
+
+function normalizedDistance(a,b){ if(!a||!b) return 1; const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+
+function onResults(results){
+  const now = performance.now();
+  if(!results || !results.multiFaceLandmarks || results.multiFaceLandmarks.length===0){ rawDot.visible=false; gazeDot.visible=false; draw(); return; }
+  const landmarks = results.multiFaceLandmarks[0];
+  const nose = landmarks[1]; rawDot.x=nose.x; rawDot.y=nose.y; rawDot.visible=true;
+  const leftEye = landmarks[159], rightEye = landmarks[386];
+  const gx = (leftEye.x+rightEye.x)/2, gy = (leftEye.y+rightEye.y)/2;
+  window.smoothedGaze = window.smoothedGaze || {x:0.5,y:0.5};
+  window.smoothedGaze.x += (gx - window.smoothedGaze.x) * window.SMOOTHING;
+  window.smoothedGaze.y += (gy - window.smoothedGaze.y) * window.SMOOTHING;
+  gazeDot.x = window.smoothedGaze.x; gazeDot.y = window.smoothedGaze.y; gazeDot.visible=true;
+  if(window.ENABLE_LANDMARK_LOGGING) console.log('landmarks sample', landmarks.slice(0,10));
+  detectNod(landmarks);
+  draw();
+}
+
+function computeAdaptiveNodThreshold(){
+  if(!readDot.visible || !gazeDot.visible) return window.NOD_BASE_THRESHOLD;
+  const dist = normalizedDistance(gazeDot, readDot);
+  return window.NOD_BASE_THRESHOLD + (window.NOD_DISTANCE_SCALE * dist);
+}
+
+function detectNod(landmarks){
+  if(!landmarks || !landmarks[1]) return;
+  const nose = landmarks[1];
+  const now = performance.now();
+  if(window.lastNoseY == null){ window.lastNoseY = nose.y; return; }
+  const dy = nose.y - window.lastNoseY; window.lastNoseY = nose.y;
+  if(window.ENABLE_NOD_LOGGING) console.log('NOD DEBUG', { phase: window.phase, dy: dy.toFixed(4), nodArmed: window.nodArmed, adaptiveThreshold: computeAdaptiveNodThreshold().toFixed(4) });
+  if(window.phase !== Phase.READ) return;
+  const adaptiveThreshold = computeAdaptiveNodThreshold();
+  if(dy > adaptiveThreshold && !window.nodArmed){ window.nodArmed = true; window.lastNodTime = now; }
+  if(window.nodArmed && now - window.lastNodTime > 80 && now - window.lastNodTime < 600){ advancePage(); window.nodArmed = false; }
+  if(now - window.lastNodTime > window.NOD_COOLDOWN_MS) window.nodArmed = false;
+}
+
+function draw(){
+  const w=canvas.width, h=canvas.height; ctx.clearRect(0,0,w,h);
+  const cx=w/2, cy=h/2, radius=Math.min(w,h)*0.42;
+  ctx.save(); ctx.translate(cx,cy);
+  ctx.beginPath(); ctx.arc(0,0,radius,0,Math.PI*2); ctx.strokeStyle="#333"; ctx.lineWidth=2; ctx.stroke();
+  ctx.restore();
+  if(rawDot.visible){ const p=mapToCanvas(rawDot); ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fillStyle="#ff4444"; ctx.fill(); }
+  if(gazeDot.visible){ const p=mapToCanvas(gazeDot); ctx.beginPath(); ctx.arc(p.x,p.y,5,0,Math.PI*2); ctx.fillStyle="#33e0ff"; ctx.fill(); }
+  if(readDot.visible){ const p=mapToCanvas(readDot); const dist=normalizedDistance(gazeDot, readDot); let ringColor="#6bff6b"; if(dist>window.DISTANCE_COLOR_THRESHOLDS.mid) ringColor="#ff6b6b"; else if(dist>window.DISTANCE_COLOR_THRESHOLDS.close) ringColor="#ffd36b"; ctx.beginPath(); ctx.arc(p.x,p.y,window.TARGET_RADIUS_PX,0,Math.PI*2); ctx.lineWidth=3; ctx.strokeStyle=ringColor; ctx.stroke(); ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle=ringColor; ctx.fill(); ctx.font="12px system-ui, Arial"; ctx.fillStyle="#fff"; ctx.fillText(`d=${dist.toFixed(3)}`, p.x + window.TARGET_RADIUS_PX + 8, p.y + 4); }
+  const now = performance.now(); const distVal = (readDot.visible && gazeDot.visible) ? normalizedDistance(gazeDot, readDot) : null;
+  debugOverlay.textContent =
+    `phase: ${window.phase}
+pageIndex: ${window.currentPageIndex + 1}/${pages.length}
+gaze->target d: ${distVal !== null ? distVal.toFixed(3) : "n/a"}
+NOD_BASE_THRESHOLD: ${window.NOD_BASE_THRESHOLD}
+NOD_DISTANCE_SCALE: ${window.NOD_DISTANCE_SCALE}
+NOD_THRESHOLD(adaptive): ${computeAdaptiveNodThreshold().toFixed(4)}
+NOD_COOLDOWN_MS: ${window.NOD_COOLDOWN_MS}
+SMOOTHING: ${window.SMOOTHING}
+ENABLE_NOD_LOGGING: ${window.ENABLE_NOD_LOGGING}`;
+  document.getElementById('adaptiveDisplay').textContent = computeAdaptiveNodThreshold().toFixed(4);
+  document.getElementById('controlStatus').textContent = `Phase: ${window.phase}\nNod armed: ${window.nodArmed}\nGaze→target d: ${distVal !== null ? distVal.toFixed(3) : "n/a"}`;
+}
+
+function mapToCanvas(pt){ const w=canvas.width,h=canvas.height; return { x:(1-pt.x)*w, y:pt.y*h }; }
+
+function startCalibration(){ calibrationActive=true; window.phase=Phase.ARRIVE; arriveStartTime=performance.now(); settleStartTime=null; holdStartTime=null; readDot.visible=false; showHint('info','Calibration started'); }
+function updateCalibrationPhases(){ if(!calibrationActive) return; const now=performance.now(); if(window.phase===Phase.ARRIVE){ if(now-arriveStartTime>=ARRIVE_MS){ window.phase=Phase.SETTLE; settleStartTime=now; } } else if(window.phase===Phase.SETTLE){ if(now-settleStartTime>=SETTLE_MS){ window.phase=Phase.HOLD; holdStartTime=now; } } else if(window.phase===Phase.HOLD){ if(now-holdStartTime>=HOLD_MS){ calibrationActive=false; window.phase=Phase.TITLE; readDot.x=gazeDot.x; readDot.y=gazeDot.y; readDot.visible=true; setTimeout(()=>{ window.phase=Phase.ACK; setTimeout(()=>{ window.phase=Phase.READ; enterReadMode(); },900); },900); } } }
+
+function enterReadMode(){ document.getElementById('saveBaselineBtn').style.display='inline-block'; showHint('info','READ mode active. Press Space or nod to advance.'); }
+function advancePage(){ console.log('advancePage called — phase=', window.phase, 'pageIndex=', window.currentPageIndex); if(window.currentPageIndex < pages.length-1){ window.currentPageIndex++; } else { showHint('info','End of debug pages.'); } }
+
+function loop(){ updateCalibrationPhases(); requestAnimationFrame(loop); }
+
+function showHint(level,text){ hintBox.className=''; hintBox.style.display='block'; hintBox.textContent=text; }
+function hideHintIf(level){ hintBox.style.display='none'; }
+
+function applyPreset(name){
+  if(name==='conservative'){ window.NOD_BASE_THRESHOLD=0.06; window.NOD_DISTANCE_SCALE=0.6; window.NOD_COOLDOWN_MS=1600; window.SMOOTHING=0.35; faceMesh.setOptions({minDetectionConfidence:0.7,minTrackingConfidence:0.7}); }
+  else if(name==='balanced'){ window.NOD_BASE_THRESHOLD=0.06; window.NOD_DISTANCE_SCALE=0.6; window.NOD_COOLDOWN_MS=1200; window.SMOOTHING=0.25; faceMesh.setOptions({minDetectionConfidence:0.6,minTrackingConfidence:0.6}); }
+  else if(name==='sensitive'){ window.NOD_BASE_THRESHOLD=0.04; window.NOD_DISTANCE_SCALE=0.5; window.NOD_COOLDOWN_MS=800; window.SMOOTHING=0.18; faceMesh.setOptions({minDetectionConfidence:0.5,minTrackingConfidence:0.5}); }
+  document.getElementById('baseThresholdRange').value = window.NOD_BASE_THRESHOLD;
+  document.getElementById('baseThresholdVal').textContent = Number(window.NOD_BASE_THRESHOLD).toFixed(2);
+  document.getElementById('distanceScaleRange').value = window.NOD_DISTANCE_SCALE;
+  document.getElementById('distanceScaleVal').textContent = Number(window.NOD_DISTANCE_SCALE).toFixed(2);
+  document.getElementById('cooldownRange').value = window.NOD_COOLDOWN_MS;
+  document.getElementById('cooldownVal').textContent = window.NOD_COOLDOWN_MS;
+  document.getElementById('smoothingRange').value = window.SMOOTHING;
+  document.getElementById('smoothingVal').textContent = Number(window.SMOOTHING).toFixed(2);
+  document.getElementById('targetRadiusRange').value = window.TARGET_RADIUS_PX;
+  document.getElementById('targetRadiusVal').textContent = window.TARGET_RADIUS_PX;
+  console.log('Applied preset', name);
+}
+
+/* UI wiring */
+document.getElementById('applyPresetBtn').addEventListener('click', ()=> applyPreset(document.getElementById('presetSelect').value));
+document.getElementById('startCalibrationBtnPanel').addEventListener('click', ()=> startCalibration());
+document.getElementById('centerTargetBtn').addEventListener('click', ()=> { readDot.x=0.5; readDot.y=0.5; readDot.visible=true; draw(); console.log('Target centered'); });
+document.getElementById('saveBaselineBtn').addEventListener('click', ()=> {
+  const baseline = { NOD_BASE_THRESHOLD: window.NOD_BASE_THRESHOLD, NOD_DISTANCE_SCALE: window.NOD_DISTANCE_SCALE, NOD_COOLDOWN_MS: window.NOD_COOLDOWN_MS, SMOOTHING: window.SMOOTHING, TARGET_RADIUS_PX: window.TARGET_RADIUS_PX };
+  console.log('Saved baseline (copy this):', JSON.stringify(baseline, null, 2));
+  showHint('info','Baseline printed to console. Copy and save it.');
+});
+document.getElementById('resetBtn').addEventListener('click', ()=> { applyPreset('balanced'); showHint('info','Defaults restored (balanced).'); });
+
+document.getElementById('baseThresholdRange').addEventListener('input', (e)=> { window.NOD_BASE_THRESHOLD = Number(e.target.value); document.getElementById('baseThresholdVal').textContent = Number(window.NOD_BASE_THRESHOLD).toFixed(2); });
+document.getElementById('distanceScaleRange').addEventListener('input', (e)=> { window.NOD_DISTANCE_SCALE = Number(e.target.value); document.getElementById('distanceScaleVal').textContent = Number(window.NOD_DISTANCE_SCALE).toFixed(2); });
+document.getElementById('cooldownRange').addEventListener('input', (e)=> { window.NOD_COOLDOWN_MS = Number(e.target.value); document.getElementById('cooldownVal').textContent = window.NOD_COOLDOWN_MS; });
+document.getElementById('smoothingRange').addEventListener('input', (e)=> { window.SMOOTHING = Number(e.target.value); document.getElementById('smoothingVal').textContent = Number(window.SMOOTHING).toFixed(2); });
+document.getElementById('targetRadiusRange').addEventListener('input', (e)=> { window.TARGET_RADIUS_PX = Number(e.target.value); document.getElementById('targetRadiusVal').textContent = window.TARGET_RADIUS_PX; });
+
+document.getElementById('enableNodLogging').addEventListener('change', (e)=> { window.ENABLE_NOD_LOGGING = e.target.checked; });
+document.getElementById('enableLandmarkLogging').addEventListener('change', (e)=> { window.ENABLE_LANDMARK_LOGGING = e.target.checked; });
+
+window.addEventListener('keydown', (e)=> { if(e.code==='Space' && window.phase===Phase.READ){ advancePage(); e.preventDefault(); } });
+
+(async function init(){ applyPreset('balanced'); await initCamera(); loop(); })();
+</script>
+</body>
+</html>

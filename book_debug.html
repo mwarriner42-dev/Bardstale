@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FaceMesh Nod Debug Scaffold</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111; color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; padding: 10px 0;
+    }
+    h1 { font-size: 1.15rem; padding: 10px; color: #888; letter-spacing: 0.5px; }
+
+    /* ── Stage: video + all overlays ── */
+    #stage {
+      position: relative; width: 640px; height: 480px;
+      border: 2px solid #333; border-radius: 8px; overflow: hidden;
+      margin-bottom: 14px; background: #000;
+    }
+    #webcam {
+      width: 100%; height: 100%; object-fit: cover;
+      transform: scaleX(-1);
+    }
+    #overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      transform: scaleX(-1);
+    }
+
+    /* Debug stats — top-left of stage */
+    #debugOverlay {
+      position: absolute; top: 8px; left: 8px;
+      background: rgba(0,0,0,0.72); color: #0f0;
+      font: 12px/1.45 monospace; padding: 7px 10px;
+      border-radius: 4px; white-space: pre;
+      pointer-events: none; z-index: 10;
+    }
+
+    /* Last Nod Sample readout — bottom-left of stage */
+    #lastNodSample {
+      position: absolute; bottom: 8px; left: 8px; right: 8px;
+      background: rgba(0,0,0,0.82); color: #ff0;
+      font: 13px/1.5 monospace; padding: 8px 12px;
+      border-radius: 4px; pointer-events: none; z-index: 10;
+      border: 1px solid #444;
+    }
+    #lastNodSample .lns-label {
+      color: #999; font-size: 10px; text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 2px;
+    }
+
+    /* Calibration target dot */
+    #calTarget {
+      position: absolute; border-radius: 50%;
+      border: 3px solid rgba(0,200,255,0.8);
+      background: rgba(0,200,255,0.12);
+      pointer-events: none; z-index: 5; display: none;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Green flash on nod detection */
+    #nodFlash {
+      position: absolute; inset: 0;
+      background: rgba(0,255,100,0.18);
+      pointer-events: none; opacity: 0;
+      transition: opacity 0.12s; z-index: 8;
+    }
+
+    /* ── Control Panel ── */
+    #controls {
+      background: #1a1a1a; border: 1px solid #333;
+      border-radius: 8px; padding: 16px 20px; width: 640px;
+      margin-bottom: 12px;
+    }
+    #controls h2 {
+      font-size: 0.85rem; color: #777; margin-bottom: 12px;
+      text-transform: uppercase; letter-spacing: 1.2px;
+    }
+    .ctrl-row {
+      display: flex; align-items: center; margin-bottom: 7px; gap: 10px;
+    }
+    .ctrl-row label {
+      width: 170px; font-size: 0.84rem; color: #bbb;
+    }
+    .ctrl-row input[type="range"] {
+      flex: 1; accent-color: #0af;
+    }
+    .ctrl-row .val {
+      width: 52px; text-align: right;
+      font: 0.84rem monospace; color: #0f0;
+    }
+    .btn-row {
+      display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;
+    }
+    .btn {
+      padding: 7px 15px; border: 1px solid #555; border-radius: 4px;
+      background: #222; color: #ddd; font-size: 0.84rem;
+      cursor: pointer; transition: background 0.2s;
+    }
+    .btn:hover { background: #333; }
+    .btn.primary { border-color: #0af; color: #0af; }
+    .btn.primary:hover { background: #0a3050; }
+    .btn.copy { border-color: #f0a; color: #f0a; }
+    .btn.copy:hover { background: #3a0030; }
+
+    /* Status strip */
+    #status {
+      font-size: 0.78rem; color: #666; padding: 6px;
+      text-align: center; max-width: 640px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>🔬 FaceMesh Nod Debug Scaffold</h1>
+
+<!-- ═══════════ STAGE: video + debug overlays ═══════════ -->
+<div id="stage">
+  <video id="webcam" autoplay playsinline></video>
+  <canvas id="overlay"></canvas>
+
+  <!-- Live debug stats (top-left) -->
+  <div id="debugOverlay">Initializing…</div>
+
+  <!--
+    LAST NOD SAMPLE readout (bottom of stage)
+    Updates every frame with: phase, dy, adaptiveThreshold, nodArmed
+  -->
+  <div id="lastNodSample">
+    <div class="lns-label">Last Nod Sample</div>
+    <div id="nodSampleText">— waiting for calibration —</div>
+  </div>
+
+  <!-- Calibration target (shown during calibration) -->
+  <div id="calTarget"></div>
+
+  <!-- Flash overlay on nod detection -->
+  <div id="nodFlash"></div>
+</div>
+
+<!-- ═══════════ CONTROL PANEL ═══════════ -->
+<div id="controls">
+  <h2>Nod Tuning</h2>
+
+  <div class="ctrl-row">
+    <label>Base Threshold</label>
+    <input type="range" id="slThresh" min="0.01" max="0.20" step="0.005">
+    <span class="val" id="vThresh"></span>
+  </div>
+  <div class="ctrl-row">
+    <label>Distance Scale</label>
+    <input type="range" id="slDist" min="0.0" max="1.50" step="0.05">
+    <span class="val" id="vDist"></span>
+  </div>
+  <div class="ctrl-row">
+    <label>Cooldown (ms)</label>
+    <input type="range" id="slCool" min="200" max="3000" step="50">
+    <span class="val" id="vCool"></span>
+  </div>
+  <div class="ctrl-row">
+    <label>Smoothing (α)</label>
+    <input type="range" id="slSmooth" min="0.05" max="0.80" step="0.01">
+    <span class="val" id="vSmooth"></span>
+  </div>
+  <div class="ctrl-row">
+    <label>Target Radius (px)</label>
+    <input type="range" id="slRad" min="10" max="80" step="1">
+    <span class="val" id="vRad"></span>
+  </div>
+
+  <!-- Buttons: Start Calibration, Save Baseline, Copy Baseline, Reset -->
+  <div class="btn-row">
+    <button class="btn primary" id="btnCal">▶ Start Calibration</button>
+    <button class="btn"         id="btnSave">💾 Save Baseline</button>
+    <button class="btn copy"    id="btnCopy">📋 Copy Baseline</button>
+    <button class="btn"         id="btnReset">↺ Reset Defaults</button>
+  </div>
+</div>
+
+<div id="status">Camera loading…</div>
+
+<!-- ═══════════ MediaPipe FaceMesh CDN ═══════════ -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432234/camera_utils.js"
+        crossorigin="anonymous"></script>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+ *  BAKED BASELINE DEFAULTS
+ *  ──────────────────────
+ *  Change these five values to update the starting baseline.
+ *  Sliders initialize from these; "Reset Defaults" restores them.
+ * ═══════════════════════════════════════════════════════════════ */
+const DEFAULTS = Object.freeze({
+  NOD_BASE_THRESHOLD : 0.06,   // minimum pitch-delta to begin nod-down phase
+  NOD_DISTANCE_SCALE : 0.55,   // face-size → threshold compensation factor
+  NOD_COOLDOWN_MS    : 1200,   // lockout after a registered nod (ms)
+  SMOOTHING          : 0.30,   // EMA alpha (lower = smoother, higher = snappier)
+  TARGET_RADIUS_PX   : 38      // calibration target dot size (px)
+});
+
+// ── Live config (mutated by sliders) ──
+let cfg = { ...DEFAULTS };
+
+// ══════════════════════ DOM refs ══════════════════════
+const video       = document.getElementById('webcam');
+const canvasEl    = document.getElementById('overlay');
+const canvasCtx   = canvasEl.getContext('2d');
+const debugEl     = document.getElementById('debugOverlay');
+const nodSampleEl = document.getElementById('nodSampleText');
+const calTarget   = document.getElementById('calTarget');
+const nodFlash    = document.getElementById('nodFlash');
+const statusEl    = document.getElementById('status');
+
+const sl = {
+  thresh : document.getElementById('slThresh'),
+  dist   : document.getElementById('slDist'),
+  cool   : document.getElementById('slCool'),
+  smooth : document.getElementById('slSmooth'),
+  rad    : document.getElementById('slRad')
+};
+const vl = {
+  thresh : document.getElementById('vThresh'),
+  dist   : document.getElementById('vDist'),
+  cool   : document.getElementById('vCool'),
+  smooth : document.getElementById('vSmooth'),
+  rad    : document.getElementById('vRad')
+};
+
+// ══════════════════════ Nod-detection state ══════════════════════
+let smoothedNoseY = null;   // EMA-smoothed normalized nose-Y
+let baselineNoseY = null;   // neutral-pose average (set by calibration)
+let refFaceHeight = null;   // face height at calibration distance
+let nodPhase      = 'IDLE'; // IDLE → DOWN → (nod!) → cooldown → IDLE
+let nodArmed      = false;  // armed once dy crosses threshold going down
+let lastNodTime   = 0;
+let nodCount      = 0;
+let frameCount    = 0;
+let fps           = 0;
+let fpsT0         = performance.now();
+
+// Calibration
+let calibrating    = false;
+let calSamples     = [];
+const CAL_FRAMES   = 60;    // ~2 s at 30 fps
+
+// ══════════════════════ Slider ↔ Config ══════════════════════
+function pushLabels() {
+  vl.thresh.textContent = parseFloat(sl.thresh.value).toFixed(3);
+  vl.dist.textContent   = parseFloat(sl.dist.value).toFixed(2);
+  vl.cool.textContent   = sl.cool.value;
+  vl.smooth.textContent = parseFloat(sl.smooth.value).toFixed(2);
+  vl.rad.textContent    = sl.rad.value;
+}
+
+function syncFromCfg() {
+  sl.thresh.value = cfg.NOD_BASE_THRESHOLD;
+  sl.dist.value   = cfg.NOD_DISTANCE_SCALE;
+  sl.cool.value   = cfg.NOD_COOLDOWN_MS;
+  sl.smooth.value = cfg.SMOOTHING;
+  sl.rad.value    = cfg.TARGET_RADIUS_PX;
+  pushLabels();
+}
+
+function readSliders() {
+  cfg.NOD_BASE_THRESHOLD = parseFloat(sl.thresh.value);
+  cfg.NOD_DISTANCE_SCALE = parseFloat(sl.dist.value);
+  cfg.NOD_COOLDOWN_MS    = parseInt(sl.cool.value, 10);
+  cfg.SMOOTHING          = parseFloat(sl.smooth.value);
+  cfg.TARGET_RADIUS_PX   = parseInt(sl.rad.value, 10);
+  pushLabels();
+}
+
+Object.values(sl).forEach(s => s.addEventListener('input', readSliders));
+syncFromCfg();   // initialize sliders to baked defaults
+
+/* ══════════════════════════════════════════════════════════════
+ *  BASELINE JSON builder
+ *  ──────────────────────
+ *  Shared by Save Baseline (→ console) and Copy Baseline (→ clipboard).
+ *  Both buttons emit the exact same JSON string.
+ * ══════════════════════════════════════════════════════════════ */
+function buildBaselineJSON() {
+  return JSON.stringify({
+    NOD_BASE_THRESHOLD : cfg.NOD_BASE_THRESHOLD,
+    NOD_DISTANCE_SCALE : cfg.NOD_DISTANCE_SCALE,
+    NOD_COOLDOWN_MS    : cfg.NOD_COOLDOWN_MS,
+    SMOOTHING          : cfg.SMOOTHING,
+    TARGET_RADIUS_PX   : cfg.TARGET_RADIUS_PX,
+    refFaceHeight      : refFaceHeight,
+    baselineNoseY      : baselineNoseY,
+    capturedAt         : new Date().toISOString()
+  }, null, 2);
+}
+
+// ══════════════════════ Button handlers ══════════════════════
+
+// Save Baseline → console
+document.getElementById('btnSave').addEventListener('click', () => {
+  const json = buildBaselineJSON();
+  console.log('%c[SAVE BASELINE]', 'color:#0af;font-weight:bold', '\n' + json);
+  statusEl.textContent = '✅ Baseline JSON printed to console (DevTools).';
+});
+
+// Copy Baseline → clipboard  (same JSON as Save)
+document.getElementById('btnCopy').addEventListener('click', async () => {
+  const json = buildBaselineJSON();
+  try {
+    await navigator.clipboard.writeText(json);
+    statusEl.textContent = '📋 Baseline JSON copied to clipboard!';
+  } catch (_) {
+    // Fallback when clipboard API is blocked (non-HTTPS, iframe, etc.)
+    console.log('%c[COPY BASELINE]', 'color:#f0a;font-weight:bold', '\n' + json);
+    statusEl.textContent = '⚠ Clipboard blocked — printed to console instead.';
+  }
+});
+
+// Reset Defaults → restore baked values
+document.getElementById('btnReset').addEventListener('click', () => {
+  cfg = { ...DEFAULTS };
+  syncFromCfg();
+  statusEl.textContent = '↺ Reset to baked defaults.';
+});
+
+// Start Calibration → collect neutral-pose samples
+document.getElementById('btnCal').addEventListener('click', () => {
+  if (calibrating) return;
+  calibrating = true;
+  calSamples  = [];
+  smoothedNoseY = null;         // reset smoother for clean cal
+  statusEl.textContent = '🎯 Hold still and look at the dot…';
+  calTarget.style.display = 'block';
+  const d = cfg.TARGET_RADIUS_PX * 2;
+  calTarget.style.width  = d + 'px';
+  calTarget.style.height = d + 'px';
+  calTarget.style.left   = '50%';
+  calTarget.style.top    = '50%';
+});
+
+/* ══════════════════════════════════════════════════════════════
+ *  MEDIAPIPE FACEMESH — initialization & camera
+ * ══════════════════════════════════════════════════════════════ */
+const faceMesh = new FaceMesh({
+  locateFile: file =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`
+});
+
+faceMesh.setOptions({
+  maxNumFaces            : 1,
+  refineLandmarks        : true,   // iris ring (468-477)
+  minDetectionConfidence : 0.5,
+  minTrackingConfidence  : 0.5
+});
+
+faceMesh.onResults(onResults);
+
+// Camera start (preserved integration point)
+const camera = new Camera(video, {
+  onFrame: async () => { await faceMesh.send({ image: video }); },
+  width: 640, height: 480
+});
+
+camera.start().then(() => {
+  canvasEl.width  = 640;
+  canvasEl.height = 480;
+  statusEl.textContent = '🟢 Camera active — FaceMesh running.';
+}).catch(err => {
+  statusEl.textContent = '🔴 Camera error: ' + err.message;
+  console.error('[CAM]', err);
+});
+
+/* ══════════════════════════════════════════════════════════════
+ *  PER-FRAME HANDLER
+ * ══════════════════════════════════════════════════════════════ */
+function onResults(results) {
+  // ── FPS ──
+  frameCount++;
+  const now = performance.now();
+  if (now - fpsT0 >= 1000) { fps = frameCount; frameCount = 0; fpsT0 = now; }
+
+  canvasCtx.save();
+  canvasCtx.clearRect(0, 0, 640, 480);
+
+  if (!results.multiFaceLandmarks?.length) {
+    debugEl.textContent = `FPS: ${fps}\nNo face detected`;
+    canvasCtx.restore();
+    return;
+  }
+
+  const lm = results.multiFaceLandmarks[0];
+
+  /* ── Key landmarks ──
+   *   10  = forehead center
+   *   1   = nose tip
+   *   152 = chin tip                                             */
+  const forehead = lm[10];
+  const nose     = lm[1];
+  const chin     = lm[152];
+
+  const faceH = Math.abs(chin.y - forehead.y) || 0.001;
+
+  // Normalized nose position within face frame (0 = forehead, 1 = chin)
+  const rawNoseY = (nose.y - forehead.y) / faceH;
+
+  // ── EMA smoothing ──
+  smoothedNoseY = smoothedNoseY === null
+    ? rawNoseY
+    : cfg.SMOOTHING * rawNoseY + (1 - cfg.SMOOTHING) * smoothedNoseY;
+
+  // ── Calibration collection ──
+  if (calibrating) {
+    calSamples.push({ y: smoothedNoseY, h: faceH });
+    const pct = calSamples.length / CAL_FRAMES;
+    calTarget.style.background =
+      `conic-gradient(rgba(0,200,255,0.45) ${pct * 360}deg, rgba(0,200,255,0.08) 0deg)`;
+
+    if (calSamples.length >= CAL_FRAMES) {
+      baselineNoseY = calSamples.reduce((s, v) => s + v.y, 0) / calSamples.length;
+      refFaceHeight = calSamples.reduce((s, v) => s + v.h, 0) / calSamples.length;
+      calibrating = false;
+      calTarget.style.display = 'none';
+      statusEl.textContent =
+        `✅ Calibrated  baseline=${baselineNoseY.toFixed(4)}  refH=${refFaceHeight.toFixed(4)}`;
+      console.log('[CAL DONE]', { baselineNoseY, refFaceHeight });
+    }
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+   *  NOD DETECTION (active only after calibration)
+   * ══════════════════════════════════════════════════════════════ */
+  let dy               = 0;
+  let adaptiveThreshold = cfg.NOD_BASE_THRESHOLD;
+
+  if (baselineNoseY !== null) {
+    // dy > 0  →  nose moved DOWN vs. baseline (nod-down gesture)
+    dy = smoothedNoseY - baselineNoseY;
+
+    // Adaptive threshold: compensate for distance changes since calibration.
+    // Farther → smaller face → weaker signal → lower threshold.
+    if (refFaceHeight > 0) {
+      const sizeRatio = faceH / refFaceHeight;
+      adaptiveThreshold = cfg.NOD_BASE_THRESHOLD /
+        Math.max(0.3, 1 + cfg.NOD_DISTANCE_SCALE * (sizeRatio - 1));
+    }
+
+    const inCooldown = (now - lastNodTime) < cfg.NOD_COOLDOWN_MS;
+
+    // ── State machine ──
+    if (!inCooldown) {
+      if (nodPhase === 'IDLE' && dy > adaptiveThreshold) {
+        nodPhase = 'DOWN';
+        nodArmed = true;
+      } else if (nodPhase === 'DOWN' && nodArmed && dy < adaptiveThreshold * 0.3) {
+        // Return stroke detected — nod complete
+        nodPhase  = 'IDLE';
+        nodArmed  = false;
+        nodCount++;
+        lastNodTime = now;
+
+        console.log(
+          `%c[NOD #${nodCount}]`, 'color:#0f0;font-weight:bold',
+          `dy=${dy.toFixed(4)}  thresh=${adaptiveThreshold.toFixed(4)}`
+        );
+
+        // Green flash feedback
+        nodFlash.style.opacity = '1';
+        setTimeout(() => { nodFlash.style.opacity = '0'; }, 140);
+      }
+    } else {
+      // Still in cooldown — stay idle
+      nodPhase = 'IDLE';
+      nodArmed = false;
+    }
+
+    /* ── NOD DEBUG sample → Last Nod Sample readout ──
+     *  Updates every frame so the readout shows real-time state
+     *  matching what a `console.log('NOD DEBUG', …)` would print. */
+    nodSampleEl.textContent =
+      `phase: ${nodPhase}  ·  dy: ${dy >= 0 ? '+' : ''}${dy.toFixed(4)}\n` +
+      `adaptiveThreshold: ${adaptiveThreshold.toFixed(4)}  ·  nodArmed: ${nodArmed}`;
+
+  } else {
+    nodSampleEl.textContent = '— calibrate first —';
+  }
+
+  // ══════════════════════ Canvas drawing ══════════════════════
+
+  // Key landmark dots
+  const dots = [
+    { idx: 10,  color: '#0af', r: 3 },   // forehead
+    { idx: 1,   color: '#ff0', r: 4 },   // nose tip (highlighted)
+    { idx: 152, color: '#0af', r: 3 },   // chin
+    { idx: 234, color: '#08a', r: 2 },   // left ear
+    { idx: 454, color: '#08a', r: 2 }    // right ear
+  ];
+  for (const d of dots) {
+    const p = lm[d.idx];
+    canvasCtx.beginPath();
+    canvasCtx.arc(p.x * 640, p.y * 480, d.r, 0, Math.PI * 2);
+    canvasCtx.fillStyle = d.color;
+    canvasCtx.fill();
+  }
+
+  // dy bar (from nose tip, length proportional to deflection)
+  if (baselineNoseY !== null) {
+    const nx = nose.x * 640;
+    const ny = nose.y * 480;
+    const barScale = 600;
+    const barLen   = dy * barScale;
+
+    canvasCtx.strokeStyle = dy > adaptiveThreshold ? '#f44' : '#0f0';
+    canvasCtx.lineWidth   = 2.5;
+    canvasCtx.beginPath();
+    canvasCtx.moveTo(nx, ny);
+    canvasCtx.lineTo(nx, ny - barLen);
+    canvasCtx.stroke();
+
+    // Threshold markers (dashed yellow)
+    const tBar = adaptiveThreshold * barScale;
+    canvasCtx.strokeStyle = 'rgba(255,255,0,0.45)';
+    canvasCtx.lineWidth   = 1;
+    canvasCtx.setLineDash([4, 4]);
+    canvasCtx.beginPath();
+    canvasCtx.moveTo(nx - 18, ny - tBar);
+    canvasCtx.lineTo(nx + 18, ny - tBar);
+    canvasCtx.stroke();
+    canvasCtx.setLineDash([]);
+  }
+
+  // ── Debug overlay ──
+  debugEl.textContent =
+    `FPS: ${fps}  ·  Nods: ${nodCount}\n` +
+    `noseY: ${smoothedNoseY.toFixed(4)}  raw: ${rawNoseY.toFixed(4)}\n` +
+    `baseline: ${baselineNoseY?.toFixed(4) ?? '—'}  dy: ${dy >= 0 ? '+' : ''}${dy.toFixed(4)}\n` +
+    `faceH: ${faceH.toFixed(4)}  refH: ${refFaceHeight?.toFixed(4) ?? '—'}\n` +
+    `thresh: ${adaptiveThreshold.toFixed(4)}  phase: ${nodPhase}  armed: ${nodArmed}`;
+
+  canvasCtx.restore();
+}
+</script>
+</body>
+</html>
